@@ -10,14 +10,16 @@ import scipy.stats as stats
 from scipy import optimize
 import warnings
 
-# PyPortfolioOpt imports
+# --- QUANTITATIVE LIBRARY IMPORTS ---
+# PyPortfolioOpt: The core engine for Mean-Variance Optimization
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
+from pypfopt.cla import CLA  # Critical Line Algorithm (Restored)
 from pypfopt.hierarchical_portfolio import HRPOpt
 from pypfopt.black_litterman import BlackLittermanModel
 from pypfopt import objective_functions
 
-# ARCH for GARCH models
+# ARCH: For Econometric Volatility Forecasting (GARCH)
 try:
     import arch
     HAS_ARCH = True
@@ -27,75 +29,79 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ============================================================================
-# 1. GLOBAL CONFIGURATION & STYLING
+# 1. GLOBAL SYSTEM CONFIGURATION
 # ============================================================================
-st.set_page_config(page_title="Enigma Institutional Terminal", layout="wide", page_icon="🏛️")
+st.set_page_config(
+    page_title="Enigma Institutional Terminal", 
+    layout="wide", 
+    page_icon="🏛️",
+    initial_sidebar_state="expanded"
+)
 
-# Professional CSS: Dark Mode, Clean Lines, Financial Terminal Look
+# Professional CSS: Dark Mode, Financial Terminal Aesthetics
 st.markdown("""
 <style>
-    /* Main Background */
+    /* Main Layout Tweaks */
     .reportview-container {background: #0e1117;}
+    div[class^="st-"] { font-family: 'Roboto', sans-serif; }
     
-    /* Metrics Cards */
-    .metric-card-container {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 15px;
-        margin-bottom: 20px;
-    }
+    /* Metric Cards - Hedge Fund Style */
     .pro-card {
         background-color: #1e1e1e;
-        border: 1px solid #333;
-        border-radius: 4px;
-        padding: 15px;
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        border-radius: 6px;
+        padding: 24px 16px;
         text-align: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        transition: all 0.3s ease;
+    }
+    .pro-card:hover { 
+        transform: translateY(-5px); 
+        box-shadow: 0 8px 15px rgba(0,0,0,0.3); 
+        border-color: #00cc96;
     }
     .metric-label {
-        font-family: 'Roboto', sans-serif;
         font-size: 11px;
         text-transform: uppercase;
         color: #888;
-        letter-spacing: 1px;
-        margin-bottom: 5px;
+        letter-spacing: 1.5px;
+        font-weight: 600;
+        margin-bottom: 10px;
     }
     .metric-value {
         font-family: 'Roboto Mono', monospace;
-        font-size: 22px;
-        font-weight: 600;
-        color: #eee;
-    }
-    .metric-pos { color: #00cc96; }
-    .metric-neg { color: #ef553b; }
-    
-    /* Tables */
-    div[data-testid="stTable"] {
-        font-family: 'Roboto Mono', monospace;
-        font-size: 12px;
+        font-size: 28px;
+        font-weight: 700;
+        color: #fff;
     }
     
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    /* Custom Tab Navigation */
+    .stTabs [data-baseweb="tab-list"] { 
+        gap: 8px; 
+        border-bottom: 1px solid #333; 
+        padding-bottom: 5px;
+    }
     .stTabs [data-baseweb="tab"] {
-        height: 40px;
-        white-space: pre-wrap;
-        border-radius: 4px 4px 0px 0px;
-        padding: 10px 20px;
-        font-size: 14px;
-        font-weight: 500;
+        height: 45px;
+        background-color: transparent;
+        border-radius: 4px;
+        font-weight: 600;
+        color: #666;
+        transition: color 0.2s;
     }
     .stTabs [aria-selected="true"] {
         background-color: #1e1e1e;
-        border-top: 2px solid #00cc96;
         color: #00cc96;
+        border: 1px solid #333;
+        border-bottom: 2px solid #00cc96;
     }
+    
+    /* Data Tables */
+    div[data-testid="stTable"] { font-size: 13px; font-family: 'Roboto Mono', monospace; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- ASSET UNIVERSES ---
-
-# 1. BIST 30 (Turkish Major Stocks)
+# --- ASSET UNIVERSES DEFINITIONS ---
 BIST_30 = [
     'AKBNK.IS', 'ARCLK.IS', 'ASELS.IS', 'BIMAS.IS', 'DOHOL.IS', 'EKGYO.IS', 
     'ENKAI.IS', 'EREGL.IS', 'FROTO.IS', 'GARAN.IS', 'GUBRF.IS', 'HALKB.IS', 
@@ -104,55 +110,75 @@ BIST_30 = [
     'THYAO.IS', 'TKFEN.IS', 'TOASO.IS', 'TSKB.IS', 'TUPRS.IS', 'YKBNK.IS'
 ]
 
-# 2. Global Major Indices (20)
 GLOBAL_INDICES = [
-    '^GSPC', '^DJI', '^IXIC', '^RUT', '^VIX', # US
-    '^FTSE', '^GDAXI', '^FCHI', '^STOXX50E', # Europe
-    '^N225', '^HSI', '000001.SS', '^STI', '^AXJO', # Asia/Pacific
+    '^GSPC', '^DJI', '^IXIC', '^RUT', '^VIX', # US Markets
+    '^FTSE', '^GDAXI', '^FCHI', '^STOXX50E',  # European Markets
+    '^N225', '^HSI', '000001.SS', '^STI', '^AXJO', # Asian Markets
     '^BVSP', '^MXX', '^MERV', # Latin America
-    '^TA125.TA', '^CASE30', '^JN0U.JO' # Middle East / Others
+    '^TA125.TA', '^CASE30', '^JN0U.JO' # Middle East
 ]
 
-# 3. US Tech/Blue Chip Defaults
 US_DEFAULTS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V', 'WMT']
 
 # ============================================================================
-# 2. DATA MANAGEMENT MODULE (ROBUST)
+# 2. ROBUST DATA PIPELINE & CACHING
 # ============================================================================
 
 class PortfolioDataManager:
-    """Professional-grade financial data manager with error handling & caching"""
+    """
+    Handles secure data fetching from Yahoo Finance with robust error handling,
+    MultiIndex parsing, and local caching to prevent API rate limits.
+    """
     
     @staticmethod
-    @st.cache_data(ttl=3600)
+    @st.cache_data(ttl=3600, show_spinner=False)
     def fetch_data(tickers, start_date, end_date):
+        """
+        Fetches OHLCV data for a list of tickers.
+        Handles the complexity of yfinance returning different structures
+        based on the number of tickers requested (Series vs DataFrame vs MultiIndex).
+        """
         if not tickers:
             return pd.DataFrame(), {}
-        try:
-            if isinstance(tickers, str):
-                tickers = [tickers]
             
-            # Robust Download
-            data = yf.download(tickers, start=start_date, end=end_date, progress=False, group_by='ticker', threads=False)
+        try:
+            # Normalize input
+            if isinstance(tickers, str): tickers = [tickers]
+            
+            # Request Data
+            data = yf.download(
+                tickers, 
+                start=start_date, 
+                end=end_date, 
+                progress=False, 
+                group_by='ticker', 
+                threads=False # Disable threads for cloud stability
+            )
             
             prices = pd.DataFrame()
             ohlc_dict = {}
 
-            # Handle Single vs Multi Ticker Structures
+            # Case A: Single Ticker Requested
             if len(tickers) == 1:
                 ticker = tickers[0]
                 df = data
+                # Unwrap MultiIndex if present
                 if isinstance(data.columns, pd.MultiIndex):
-                    try: df = data.xs(ticker, axis=1, level=0, drop_level=True)
-                    except: pass
+                    try: 
+                        df = data.xs(ticker, axis=1, level=0, drop_level=True)
+                    except: 
+                        pass # Keep original if extraction fails
                 
-                # Check for Adj Close, then Close
+                # Identify Price Column
                 price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
                 if price_col in df.columns:
                     prices[ticker] = df[price_col]
                     ohlc_dict[ticker] = df
+            
+            # Case B: Multiple Tickers Requested
             else:
-                if not isinstance(data.columns, pd.MultiIndex): 
+                # Validation: Ensure we have a MultiIndex
+                if not isinstance(data.columns, pd.MultiIndex):
                     return pd.DataFrame(), {}
                 
                 for ticker in tickers:
@@ -163,153 +189,234 @@ class PortfolioDataManager:
                             prices[ticker] = df[price_col]
                             ohlc_dict[ticker] = df
                     except KeyError:
+                        # Skip tickers that failed to download
                         continue
             
-            # Cleaning
+            # Final Cleaning
             prices = prices.ffill().bfill()
-            prices = prices.dropna(axis=1, how='all')
+            prices = prices.dropna(axis=1, how='all') # Drop empty columns
+            
             return prices, ohlc_dict
             
         except Exception as e:
-            st.error(f"Data Pipeline Error: {str(e)}")
+            st.error(f"Critical Data Pipeline Error: {str(e)}")
             return pd.DataFrame(), {}
 
     @staticmethod
     def calculate_returns(prices, method='log'):
+        """Calculates Logarithmic or Simple returns"""
         if method == 'log':
             return np.log(prices / prices.shift(1)).dropna()
         else:
             return prices.pct_change().dropna()
-        
+
     @staticmethod
-    @st.cache_data(ttl=3600 * 24)
+    @st.cache_data(ttl=3600*24)
     def get_market_caps(tickers):
-        """Fetch Real Market Caps for Black-Litterman Priors"""
+        """
+        Fetches Market Capitalization data. 
+        Crucial for Black-Litterman 'Market Implied' prior calculations.
+        """
         mcaps = {}
         for t in tickers:
             try:
-                mcaps[t] = yf.Ticker(t).info.get('marketCap', 10e9) # Default 10B
+                # Default to 10B if API fails to prevent division by zero
+                mcaps[t] = yf.Ticker(t).info.get('marketCap', 10e9)
             except:
                 mcaps[t] = 10e9
         return pd.Series(mcaps)
 
 # ============================================================================
-# 3. ADVANCED RISK METRICS ENGINE
+# 3. ADVANCED RISK ENGINE (VaR, CVaR, GARCH)
 # ============================================================================
 
 class AdvancedRiskMetrics:
-    """Institutional Risk Calculation Engine"""
+    """
+    Institutional Risk Engine.
+    Calculates non-normal risk metrics including Skewness-adjusted VaR.
+    """
 
     @staticmethod
     def calculate_metrics(returns, risk_free=0.02):
+        """Generates the standard KPI matrix for the Tearsheet."""
         ann_factor = 252
         
-        # Absolute Metrics
+        # 1. Absolute Return Metrics
         total_return = (1 + returns).prod() - 1
         cagr = (1 + total_return) ** (ann_factor / len(returns)) - 1
         volatility = returns.std() * np.sqrt(ann_factor)
         
-        # Risk-Adjusted Metrics
+        # 2. Risk-Adjusted Metrics
         excess_returns = returns - (risk_free / ann_factor)
         sharpe = np.sqrt(ann_factor) * excess_returns.mean() / returns.std()
         
+        # 3. Downside Risk Metrics
         downside_returns = returns[returns < 0]
         downside_std = downside_returns.std() * np.sqrt(ann_factor)
         sortino = np.sqrt(ann_factor) * excess_returns.mean() / downside_std if downside_std != 0 else 0
         
-        # Drawdown Dynamics
+        # 4. Drawdown Analytics
         cum_returns = (1 + returns).cumprod()
         running_max = np.maximum.accumulate(cum_returns)
         drawdown = (cum_returns - running_max) / running_max
         max_dd = drawdown.min()
         calmar = cagr / abs(max_dd) if max_dd != 0 else 0
         
-        # Tail Risk
+        # 5. Tail Risk (Historical)
         var_95 = np.percentile(returns, 5)
         cvar_95 = returns[returns <= var_95].mean()
         
         return {
-            "Total Return": total_return, "CAGR": cagr, "Volatility": volatility,
-            "Sharpe Ratio": sharpe, "Sortino Ratio": sortino, "Max Drawdown": max_dd,
-            "Calmar Ratio": calmar, "VaR 95%": var_95, "CVaR 95%": cvar_95
+            "Total Return": total_return,
+            "CAGR": cagr,
+            "Volatility": volatility,
+            "Sharpe Ratio": sharpe,
+            "Sortino Ratio": sortino,
+            "Max Drawdown": max_dd,
+            "Calmar Ratio": calmar,
+            "VaR 95%": var_95,
+            "CVaR 95%": cvar_95
         }
 
     @staticmethod
-    def calculate_garch_vol(returns):
-        """GARCH(1,1) Volatility Forecasting"""
-        if not HAS_ARCH: return None
-        try:
-            am = arch.arch_model(returns * 100, vol='Garch', p=1, q=1, dist='normal')
-            res = am.fit(disp='off')
-            return np.sqrt(res.forecast(horizon=1).variance.values[-1, 0]) / 100
-        except:
-            return returns.std()
-
-    @staticmethod
     def calculate_comprehensive_risk_profile(returns, confidence_levels=[0.95, 0.99]):
-        """Parametric, Historical, and Modified VaR/CVaR"""
+        """
+        The Core Engine for the 'Visual VaR' Tab.
+        Computes VaR using 3 distinct methodologies to highlight Model Risk.
+        """
         results = {}
-        mu, sigma = returns.mean(), returns.std()
-        skew, kurt = stats.skew(returns), stats.kurtosis(returns)
+        
+        # Distribution Moments
+        mu = returns.mean()
+        sigma = returns.std()
+        skew = stats.skew(returns)
+        kurt = stats.kurtosis(returns) # Excess Kurtosis
         
         for conf in confidence_levels:
             alpha = 1 - conf
-            z = stats.norm.ppf(alpha)
             
-            # Cornish-Fisher Expansion for Modified VaR (Fat Tail Adjustment)
-            z_cf = z + (z**2 - 1)*skew/6 + (z**3 - 3*z)*kurt/24 - (2*z**3 - 5*z)*(skew**2)/36
+            # A. Parametric VaR (Normal Distribution Assumption)
+            z_score = stats.norm.ppf(alpha)
+            var_param = mu + z_score * sigma
             
-            results[f"Parametric VaR ({int(conf*100)}%)"] = mu + z * sigma
-            results[f"Historical VaR ({int(conf*100)}%)"] = np.percentile(returns, alpha * 100)
-            results[f"Modified VaR ({int(conf*100)}%)"] = mu + z_cf * sigma
-            results[f"CVaR ({int(conf*100)}%)"] = returns[returns <= np.percentile(returns, alpha * 100)].mean()
+            # B. Historical VaR (Empirical)
+            var_hist = np.percentile(returns, alpha * 100)
+            
+            # C. Modified VaR (Cornish-Fisher Expansion)
+            # Adjusts Z-score for Skewness and Kurtosis (Fat Tails)
+            z_cf = z_score + (z_score**2 - 1)*skew/6 + (z_score**3 - 3*z_score)*kurt/24 - (2*z_score**3 - 5*z_score)*(skew**2)/36
+            var_mod = mu + z_cf * sigma
+            
+            # D. Expected Shortfall (CVaR)
+            # Average loss assuming we are in the tail (using Historical distribution)
+            tail_losses = returns[returns <= var_hist]
+            cvar_hist = tail_losses.mean() if len(tail_losses) > 0 else var_hist
+            
+            # Store Results
+            tag = f"{int(conf*100)}%"
+            results[f"Parametric VaR ({tag})"] = var_param
+            results[f"Historical VaR ({tag})"] = var_hist
+            results[f"Modified VaR ({tag})"] = var_mod
+            results[f"CVaR ({tag})"] = cvar_hist
             
         return results, skew, kurt
 
 # ============================================================================
-# 4. PORTFOLIO OPTIMIZATION ENGINE
+# 4. PYPORTFOLIOOPT STRATEGY FACTORY
 # ============================================================================
 
 class AdvancedPortfolioOptimizer:
+    """
+    Wrapper for PyPortfolioOpt.
+    Provides a unified interface for 8 different optimization strategies.
+    """
+    
     def __init__(self, returns, prices):
         self.returns = returns
         self.prices = prices
+        # Calculate Expected Returns (Mean Historical)
         self.mu = expected_returns.mean_historical_return(prices)
+        # Calculate Covariance Matrix (Sample Covariance)
+        # Note: Could switch to Ledoit-Wolf shrinkage for better stability
         self.S = risk_models.sample_cov(prices)
     
-    def optimize(self, method, risk_free_rate=0.02):
+    def optimize(self, method, risk_free_rate=0.02, target_vol=0.10, target_ret=0.20, risk_aversion=1.0):
+        """
+        Main routing function for Mean-Variance based strategies.
+        """
         ef = EfficientFrontier(self.mu, self.S)
         
+        # Strategy Selector
         if method == 'Max Sharpe':
             weights = ef.max_sharpe(risk_free_rate=risk_free_rate)
+            
         elif method == 'Min Volatility':
             weights = ef.min_volatility()
+            
         elif method == 'Efficient Risk':
-            avg_vol = np.sqrt(np.diag(self.S)).mean()
-            weights = ef.efficient_risk(target_volatility=avg_vol)
+            # Maximize return for a given target volatility
+            weights = ef.efficient_risk(target_volatility=target_vol)
+            
+        elif method == 'Efficient Return':
+            # Minimize risk for a given target return
+            weights = ef.efficient_return(target_return=target_ret)
+            
+        elif method == 'Max Quadratic Utility':
+            # Maximize: ret - 0.5 * gamma * vol^2
+            weights = ef.max_quadratic_utility(risk_aversion=risk_aversion)
             
         return ef.clean_weights(), ef.portfolio_performance(verbose=False, risk_free_rate=risk_free_rate)
 
+    def optimize_cla(self):
+        """Critical Line Algorithm (CLA) - The analytical solution to MVO"""
+        cla = CLA(self.mu, self.S)
+        # CLA computes the entire frontier, we pick Max Sharpe from it
+        weights = cla.max_sharpe()
+        return cla.clean_weights(), cla.portfolio_performance(verbose=False)
+
     def optimize_hrp(self):
+        """
+        Hierarchical Risk Parity (HRP).
+        Uses clustering (graph theory) instead of matrix inversion. 
+        Robust to shocks.
+        """
         hrp = HRPOpt(self.returns)
-        hrp.optimize()
+        weights = hrp.optimize()
         return hrp.clean_weights(), hrp.portfolio_performance(verbose=False)
         
     def optimize_black_litterman(self, market_caps):
+        """
+        Black-Litterman Model.
+        Combines Market Equilibrium (CAPM) with Investor Views.
+        (Here we use 'neutral' views for calculating the Equilibrium/Posterior)
+        """
+        # 1. Calculate Risk Aversion (Delta)
         delta = risk_models.black_litterman.market_implied_risk_aversion(self.prices)
+        
+        # 2. Calculate Market Prior
         prior = risk_models.black_litterman.market_implied_prior_returns(market_caps, delta, self.S)
+        
+        # 3. Posterior Estimate (No explicit views = Equilibrium Portfolio)
         bl = BlackLittermanModel(self.S, pi=prior, absolute_views=None)
         
+        # 4. Optimization on Posterior
         ef = EfficientFrontier(bl.bl_returns(), bl.bl_cov())
         weights = ef.max_sharpe()
+        
         return ef.clean_weights(), ef.portfolio_performance(verbose=False)
 
 # ============================================================================
-# 5. DYNAMIC BACKTESTING ENGINE (RESTORED)
+# 5. INSTITUTIONAL BACKTESTING ENGINE
 # ============================================================================
 
 class PortfolioBacktester:
-    """Simulates realistic portfolio performance with Rebalancing"""
+    """
+    Performs a realistic path-dependent simulation.
+    Features:
+    - Periodic Rebalancing (Monthly/Quarterly/Yearly)
+    - Transaction Cost modeling
+    - Drift calculation
+    """
     
     def __init__(self, prices, returns):
         self.prices = prices
@@ -317,141 +424,202 @@ class PortfolioBacktester:
         
     def run_rebalancing_backtest(self, weights, initial_capital=100000, rebalance_freq='Q', cost_bps=10):
         """
-        Runs a backtest where the portfolio is rebalanced to target weights 
-        at the specified frequency (M=Monthly, Q=Quarterly, Y=Yearly).
-        """
-        # Align weights with available assets
-        assets = self.returns.columns
-        w_vector = np.array([weights.get(a, 0) for a in assets])
+        Simulates the portfolio equity curve.
         
-        # Setup Timeline
+        :param weights: Target dictionary of weights {ticker: 0.5, ...}
+        :param rebalance_freq: 'M' (Month), 'Q' (Quarter), 'Y' (Year)
+        :param cost_bps: Basis points cost per trade (slippage + comms)
+        """
+        # 1. Setup Data Structures
+        assets = self.returns.columns
+        # Convert dictionary weights to aligned numpy array
+        w_target = np.array([weights.get(a, 0) for a in assets])
+        
+        # 2. Identify Rebalance Dates
         if rebalance_freq == 'M': dates = self.returns.resample('M').last().index
         elif rebalance_freq == 'Q': dates = self.returns.resample('Q').last().index
         else: dates = self.returns.resample('Y').last().index
         
-        # Simulation Loop
-        portfolio_value = [initial_capital]
-        current_capital = initial_capital
-        current_weights = w_vector.copy()
-        idx_dates = [self.returns.index[0]]
+        # Create a boolean mask for fast lookup inside loop
+        rebalance_mask = pd.Series(False, index=self.prices.index)
+        # We need to intersect dates because resampling might produce weekends/holidays
+        valid_dates = [d for d in dates if d in self.prices.index]
+        rebalance_mask.loc[valid_dates] = True
         
-        # Iterate through daily returns
-        cumulative_ret_series = []
-        
-        # Simplified vector approach for speed in Streamlit
-        # 1. Calculate Daily Returns of the strategy (Drifting weights)
-        # This is an approximation. For full path dependency, we need a slow loop.
-        # Given Streamlit constraints, we use a hybrid approach.
-        
-        # Create a series of target weights re-aligned at rebalance dates
-        reb_weights = pd.DataFrame(index=self.returns.index, columns=assets)
-        
-        # Fill target weights at rebalance dates
-        for d in dates:
-            if d in reb_weights.index:
-                reb_weights.loc[d] = w_vector
-        
-        # Forward fill weights (Drift logic handled by returns compounding)
-        # Actually, standard vector backtest:
-        strat_returns = self.returns.dot(w_vector) # This is daily rebalancing (too optimistic)
-        
-        # Let's do the proper iterative loop for accuracy
+        # 3. Initialization
         cash = initial_capital
-        holdings = (cash * w_vector) / self.prices.iloc[0].values
+        current_prices = self.prices.iloc[0].values
         
-        history_val = []
-        history_dates = []
+        # Initial Allocation
+        # Shares = (Capital * Weight) / Price
+        current_shares = (cash * w_target) / current_prices
         
-        for date, price_row in self.prices.iterrows():
-            # Mark to Market
-            val = np.sum(holdings * price_row.values)
+        # Initial Transaction Cost
+        # Assuming we start from 0 holdings to full allocation
+        initial_volume = cash
+        cash -= initial_volume * (cost_bps / 10000)
+        
+        portfolio_history = []
+        date_history = []
+        
+        # 4. Simulation Loop (Path Dependent)
+        # We iterate day-by-day to capture drift and exact rebalancing timing
+        for date, price_series in self.prices.iterrows():
+            market_prices = price_series.values
             
-            # Rebalance Check
-            if date in dates:
-                # Transaction Costs
-                target_holdings = (val * w_vector) / price_row.values
-                turnover = np.sum(np.abs(target_holdings - holdings)) * price_row.values
-                cost = np.sum(turnover) * (cost_bps / 10000)
-                val -= cost
+            # A. Mark-to-Market
+            portfolio_value = np.sum(current_shares * market_prices)
+            
+            # B. Rebalancing Logic
+            if rebalance_mask.loc[date]:
+                # 1. Calculate Target Holdings
+                target_value = portfolio_value # We assume fully invested
+                target_exposure = target_value * w_target
+                target_shares = target_exposure / market_prices
                 
-                # Re-set holdings
-                holdings = (val * w_vector) / price_row.values
+                # 2. Calculate Turnover
+                diff_shares = target_shares - current_shares
+                turnover_value = np.sum(np.abs(diff_shares) * market_prices)
+                
+                # 3. Deduct Costs
+                cost = turnover_value * (cost_bps / 10000)
+                portfolio_value -= cost
+                
+                # 4. Update Holdings (After cost deduction)
+                # Recalculate based on new net value
+                current_shares = (portfolio_value * w_target) / market_prices
+                
+            # Append History
+            portfolio_history.append(portfolio_value)
+            date_history.append(date)
             
-            history_val.append(val)
-            history_dates.append(date)
-            
-        return pd.Series(history_val, index=history_dates)
+        return pd.Series(portfolio_history, index=date_history)
 
 # ============================================================================
-# 6. STREAMLIT APPLICATION LOGIC
+# 6. UI & APPLICATION LOGIC
 # ============================================================================
 
-# --- SIDEBAR ---
-st.sidebar.header("🔧 Configuration")
-ticker_lists = {"US Defaults": US_DEFAULTS, "BIST 30 (Turkey)": BIST_30, "Global Indices": GLOBAL_INDICES}
+# --- SIDEBAR CONFIGURATION ---
+st.sidebar.header("🔧 Institutional Config")
+
+# Asset Universe Selection
+ticker_lists = {
+    "US Defaults": US_DEFAULTS, 
+    "BIST 30 (Turkey)": BIST_30, 
+    "Global Indices": GLOBAL_INDICES
+}
 selected_list = st.sidebar.selectbox("Asset Universe", list(ticker_lists.keys()))
 available_tickers = ticker_lists[selected_list]
-custom_tickers = st.sidebar.text_input("Custom Tickers (comma sep)", value="")
-if custom_tickers: available_tickers = list(set(available_tickers + [t.strip().upper() for t in custom_tickers.split(',')]))
-selected_tickers = st.sidebar.multiselect("Select Assets", available_tickers, default=available_tickers[:5])
 
-st.sidebar.subheader("Parameters")
+# Custom Ticker Injection
+custom_tickers = st.sidebar.text_input("Custom Tickers (Comma Separated)", value="")
+if custom_tickers: 
+    available_tickers = list(set(available_tickers + [t.strip().upper() for t in custom_tickers.split(',')]))
+
+# Selection Widget
+selected_tickers = st.sidebar.multiselect("Portfolio Assets", available_tickers, default=available_tickers[:5])
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚙️ Model Parameters")
 start_date = st.sidebar.date_input("Start Date", datetime.now() - timedelta(days=365*3))
 end_date = st.sidebar.date_input("End Date", datetime.now())
-rf_rate = st.sidebar.slider("Risk-Free Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
-method = st.sidebar.selectbox("Optimization Model", ['Max Sharpe', 'Min Volatility', 'Hierarchical Risk Parity (HRP)', 'Black-Litterman', 'Equal Weight'])
-rebal_freq = st.sidebar.selectbox("Backtest Rebalancing", ['Quarterly', 'Monthly', 'Yearly'])
+rf_rate = st.sidebar.number_input("Risk-Free Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
 
-run_btn = st.sidebar.button("🚀 INITIATE ANALYSIS", type="primary")
+# Strategy Selection
+strat_options = [
+    'Max Sharpe', 
+    'Min Volatility', 
+    'Efficient Risk', 
+    'Efficient Return', 
+    'Max Quadratic Utility', 
+    'Critical Line Algorithm (CLA)', # Added
+    'Hierarchical Risk Parity (HRP)', 
+    'Black-Litterman', 
+    'Equal Weight'
+]
+method = st.sidebar.selectbox("Optimization Objective", strat_options)
 
-# --- MAIN EXECUTION ---
+# Backtest Settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("📉 Backtest Settings")
+rebal_freq_ui = st.sidebar.selectbox("Rebalancing Frequency", ["Quarterly", "Monthly", "Yearly"])
+freq_map = {"Quarterly": "Q", "Monthly": "M", "Yearly": "Y"}
+
+# Conditional Strategy Inputs
+target_vol, target_ret, risk_aversion = 0.1, 0.2, 1.0
+if method == 'Efficient Risk':
+    target_vol = st.sidebar.slider("Target Volatility", 0.05, 0.50, 0.15)
+elif method == 'Efficient Return':
+    target_ret = st.sidebar.slider("Target Return", 0.05, 0.50, 0.20)
+elif method == 'Max Quadratic Utility':
+    risk_aversion = st.sidebar.slider("Risk Aversion (Delta)", 0.1, 10.0, 1.0)
+
+run_btn = st.sidebar.button("🚀 EXECUTE STRATEGY", type="primary")
+
+# --- MAIN EXECUTION BLOCK ---
 if run_btn:
-    with st.spinner('Initializing Quantitative Engines...'):
-        # A. Data Ingestion
-        data_mgr = PortfolioDataManager()
-        prices, ohlc_data = data_mgr.fetch_data(selected_tickers, start_date, end_date)
+    with st.spinner('Initializing Quantitative Engine...'):
+        # 1. Data Ingestion
+        data_manager = PortfolioDataManager()
+        prices, ohlc_data = data_manager.fetch_data(selected_tickers, start_date, end_date)
         
         if prices.empty:
-            st.error("No valid data found. Check Tickers.")
+            st.error("❌ Data Fetch Failed. Please check ticker validity.")
         else:
-            returns = data_mgr.calculate_returns(prices)
+            # 2. Return Calculation
+            returns = data_manager.calculate_returns(prices)
             optimizer = AdvancedPortfolioOptimizer(returns, prices)
             
-            # B. Optimization Logic
-            if method == 'Hierarchical Risk Parity (HRP)': weights, perf = optimizer.optimize_hrp()
-            elif method == 'Black-Litterman': 
-                mcaps = data_mgr.get_market_caps(selected_tickers)
-                weights, perf = optimizer.optimize_black_litterman(mcaps)
-            elif method == 'Equal Weight':
-                weights = {t: 1.0/len(selected_tickers) for t in selected_tickers}
-                w_arr = np.array(list(weights.values()))
-                ret = np.sum(returns.mean() * w_arr) * 252
-                vol = np.sqrt(np.dot(w_arr.T, np.dot(returns.cov() * 252, w_arr)))
-                perf = (ret, vol, (ret - rf_rate)/vol)
-            else: 
-                weights, perf = optimizer.optimize(method, rf_rate)
+            # 3. Optimization Routing
+            try:
+                if method == 'Critical Line Algorithm (CLA)':
+                    weights, perf = optimizer.optimize_cla()
+                elif method == 'Hierarchical Risk Parity (HRP)':
+                    weights, perf = optimizer.optimize_hrp()
+                elif method == 'Black-Litterman': 
+                    mcaps = data_manager.get_market_caps(selected_tickers)
+                    weights, perf = optimizer.optimize_black_litterman(mcaps)
+                elif method == 'Equal Weight':
+                    weights = {t: 1.0/len(selected_tickers) for t in selected_tickers}
+                    # Manually calc performance for Eq Weight
+                    w_vec = np.array(list(weights.values()))
+                    r = np.sum(returns.mean()*w_vec)*252
+                    v = np.sqrt(np.dot(w_vec.T, np.dot(returns.cov()*252, w_vec)))
+                    perf = (r, v, (r-rf_rate)/v)
+                else:
+                    weights, perf = optimizer.optimize(method, rf_rate, target_vol, target_ret, risk_aversion)
+            except Exception as e:
+                st.error(f"Optimization Failed: {str(e)}")
+                st.stop()
 
-            # C. Dynamic Backtesting (The Heavy Lifting)
+            # 4. Dynamic Backtesting
             backtester = PortfolioBacktester(prices, returns)
-            freq_map = {'Quarterly':'Q', 'Monthly':'M', 'Yearly':'Y'}
-            portfolio_equity_curve = backtester.run_rebalancing_backtest(weights, rebalance_freq=freq_map[rebal_freq])
-            port_rets = portfolio_equity_curve.pct_change().dropna()
+            equity_curve = backtester.run_rebalancing_backtest(
+                weights, 
+                rebalance_freq=freq_map[rebal_freq_ui]
+            )
+            port_ret_series = equity_curve.pct_change().dropna()
             
-            # D. Risk Calculation
-            risk_metrics = AdvancedRiskMetrics.calculate_metrics(port_rets, rf_rate)
-            var_profile, skew, kurt = AdvancedRiskMetrics.calculate_comprehensive_risk_profile(port_rets)
-
-            # --- VISUALIZATION TABS ---
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "🏛️ Executive Tearsheet", "📈 Efficient Frontier", "📉 Dynamic Backtest", 
-                "🕯️ OHLC Analysis", "🌪️ Stress Test", "⚠️ Advanced VaR"
+            # 5. Risk Profiling
+            risk_metrics = AdvancedRiskMetrics.calculate_metrics(port_ret_series, rf_rate)
+            var_profile, skew, kurt = AdvancedRiskMetrics.calculate_comprehensive_risk_profile(port_ret_series)
+            
+            # 6. Visualization Layout
+            t1, t2, t3, t4, t5, t6 = st.tabs([
+                "🏛️ Executive Tearsheet", 
+                "📈 Efficient Frontier", 
+                "📉 Dynamic Backtest", 
+                "🕯️ OHLC Analysis", 
+                "🌪️ Stress Test", 
+                "⚠️ Comparative VaR"
             ])
-
-            # TAB 1: EXECUTIVE SUMMARY (Hedge Fund Style)
-            with tab1:
+            
+            # --- TAB 1: EXECUTIVE TEARSHEET ---
+            with t1:
                 st.markdown("### 🏛️ Strategy Performance Attribution")
+                st.markdown("---")
                 
-                # KPI Grid
+                # KPI Grid (Custom HTML/CSS)
                 k1, k2, k3, k4, k5 = st.columns(5)
                 def kpi(col, label, val, color="white"):
                     col.markdown(f"""
@@ -463,137 +631,240 @@ if run_btn:
                 kpi(k1, "CAGR", f"{risk_metrics['CAGR']:.2%}", "#00cc96")
                 kpi(k2, "Volatility", f"{risk_metrics['Volatility']:.2%}")
                 kpi(k3, "Sharpe", f"{risk_metrics['Sharpe Ratio']:.2f}", "#00cc96" if risk_metrics['Sharpe Ratio']>1 else "white")
-                kpi(k4, "Max DD", f"{risk_metrics['Max Drawdown']:.2%}", "#ef553b")
+                kpi(k4, "Max Drawdown", f"{risk_metrics['Max Drawdown']:.2%}", "#ef553b")
                 kpi(k5, "Sortino", f"{risk_metrics['Sortino Ratio']:.2f}")
-
-                # Charts: Equity Curve & Allocation
-                c_main, c_pie = st.columns([2, 1])
-                with c_main:
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Allocation & Rolling Metrics
+                col_chart, col_wheel = st.columns([2, 1])
+                
+                with col_chart:
                     # Rolling Sharpe
-                    roll_sharpe = port_rets.rolling(126).apply(lambda x: (x.mean()*252 - rf_rate)/(x.std()*np.sqrt(252)))
+                    roll_sharpe = port_ret_series.rolling(126).apply(lambda x: (x.mean()*252 - rf_rate)/(x.std()*np.sqrt(252)))
                     fig_roll = go.Figure()
-                    fig_roll.add_trace(go.Scatter(x=roll_sharpe.index, y=roll_sharpe, fill='tozeroy', line=dict(color='#00cc96', width=1), name='Rolling Sharpe (6M)'))
-                    fig_roll.update_layout(title="Rolling Risk-Adjusted Return (6M)", height=350, template="plotly_dark")
+                    fig_roll.add_trace(go.Scatter(x=roll_sharpe.index, y=roll_sharpe, fill='tozeroy', line=dict(color='#00cc96', width=1.5), name='Rolling Sharpe (6M)'))
+                    fig_roll.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_roll.update_layout(title="Rolling Risk-Adjusted Return (6M)", height=380, template="plotly_dark", margin=dict(l=20, r=20, t=50, b=20))
                     st.plotly_chart(fig_roll, use_container_width=True)
                 
-                with c_pie:
-                    # Separated Labels Wheel Chart
-                    w_s = pd.Series(weights).sort_values(ascending=False)
-                    w_s = w_s[w_s > 0.001]
-                    fig_pie = go.Figure(data=[go.Pie(labels=w_s.index, values=w_s.values, hole=0.6, textinfo='label+percent', textposition='outside', marker=dict(colors=px.colors.qualitative.Bold))])
-                    fig_pie.update_layout(title="Target Allocation", height=350, showlegend=False, template="plotly_dark")
+                with col_wheel:
+                    # Optimized Wheel Chart
+                    w_series = pd.Series(weights).sort_values(ascending=False)
+                    w_series = w_series[w_series > 0.001] # Filter noise
+                    
+                    fig_pie = go.Figure(data=[go.Pie(
+                        labels=w_series.index, 
+                        values=w_series.values, 
+                        hole=0.6, 
+                        textinfo='label+percent', 
+                        textposition='outside',
+                        marker=dict(colors=px.colors.qualitative.Bold)
+                    )])
+                    fig_pie.update_layout(title="Target Allocation", showlegend=False, height=380, template="plotly_dark", margin=dict(l=40, r=40, t=50, b=40))
                     st.plotly_chart(fig_pie, use_container_width=True)
 
-                # Heatmap & Drawdown
-                c_heat, c_dd = st.columns([1.5, 1])
-                with c_heat:
-                    st.markdown("**Monthly Returns Heatmap**")
-                    m_ret = port_rets.resample('M').apply(lambda x: (1+x).prod()-1)
-                    m_df = pd.DataFrame(m_ret, columns=['Ret'])
-                    m_df['Y'] = m_df.index.year; m_df['M'] = m_df.index.strftime('%b')
+                # Monthly Heatmap & Drawdowns
+                col_heat, col_dd = st.columns([1.5, 1])
+                with col_heat:
+                    st.markdown("**📅 Monthly Returns Heatmap**")
+                    monthly_ret = port_ret_series.resample('M').apply(lambda x: (1+x).prod()-1)
+                    m_df = pd.DataFrame(monthly_ret, columns=['Ret'])
+                    m_df['Y'] = m_df.index.year
+                    m_df['M'] = m_df.index.strftime('%b')
                     piv = m_df.pivot(index='Y', columns='M', values='Ret')
-                    piv = piv.reindex(columns=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'])
+                    # Sort months correctly
+                    month_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+                    piv = piv.reindex(columns=month_order)
+                    
                     fig_heat = px.imshow(piv, color_continuous_scale="RdYlGn", text_auto='.1%', aspect="auto")
-                    fig_heat.update_layout(height=300, template="plotly_dark")
+                    fig_heat.update_layout(height=350, template="plotly_dark")
                     st.plotly_chart(fig_heat, use_container_width=True)
-
-                with c_dd:
-                    st.markdown("**Worst 5 Daily Losses**")
-                    worst = port_rets.nsmallest(5)
-                    dd_df = pd.DataFrame({"Date": worst.index.strftime('%Y-%m-%d'), "Loss": worst.values})
+                
+                with col_dd:
+                    st.markdown("**📉 Top 5 Daily Drawdowns**")
+                    worst_days = port_ret_series.nsmallest(5)
+                    dd_df = pd.DataFrame({
+                        "Date": worst_days.index.strftime('%Y-%m-%d'), 
+                        "Loss": worst_days.values
+                    })
                     dd_df['Loss'] = dd_df['Loss'].apply(lambda x: f"{x:.2%}")
                     st.table(dd_df)
 
-            # TAB 2: EFFICIENT FRONTIER
-            with tab2:
-                st.subheader("Efficient Frontier & Monte Carlo")
-                n_sims = 1500
-                all_weights = np.zeros((n_sims, len(selected_tickers)))
-                ret_arr, vol_arr, sharpe_arr = np.zeros(n_sims), np.zeros(n_sims), np.zeros(n_sims)
+            # --- TAB 2: EFFICIENT FRONTIER ---
+            with t2:
+                st.subheader("Efficient Frontier Simulation")
+                st.info("Monte Carlo simulation of 1,500 random portfolios to visualize the risk/return landscape.")
                 
-                for i in range(n_sims):
-                    w = np.random.random(len(selected_tickers)); w /= np.sum(w)
-                    all_weights[i,:] = w
-                    ret_arr[i] = np.sum(optimizer.mu * w)
-                    vol_arr[i] = np.sqrt(np.dot(w.T, np.dot(optimizer.S, w)))
-                    sharpe_arr[i] = (ret_arr[i] - rf_rate) / vol_arr[i]
+                n_sims = 1500
+                w_rand = np.random.dirichlet(np.ones(len(selected_tickers)), n_sims)
+                
+                # Vectorized Portfolio Maths
+                r_arr = np.sum(optimizer.mu * w_rand, axis=1)
+                v_arr = np.sqrt(np.diag(w_rand @ optimizer.S @ w_rand.T))
+                s_arr = (r_arr - rf_rate) / v_arr
                 
                 fig_ef = go.Figure()
-                fig_ef.add_trace(go.Scatter(x=vol_arr, y=ret_arr, mode='markers', marker=dict(color=sharpe_arr, colorscale='Viridis', showscale=True), name='Simulations'))
-                fig_ef.add_trace(go.Scatter(x=[perf[1]], y=[perf[0]], mode='markers', marker=dict(color='red', size=15, symbol='star'), name='Optimal'))
-                fig_ef.update_layout(xaxis_title="Volatility", yaxis_title="Return", height=600, template="plotly_dark")
+                fig_ef.add_trace(go.Scatter(
+                    x=v_arr, y=r_arr, mode='markers', 
+                    marker=dict(color=s_arr, colorscale='Viridis', showscale=True, colorbar=dict(title="Sharpe")), 
+                    name='Simulations'
+                ))
+                fig_ef.add_trace(go.Scatter(
+                    x=[perf[1]], y=[perf[0]], mode='markers', 
+                    marker=dict(color='red', size=25, symbol='star'), 
+                    name='Optimal Portfolio'
+                ))
+                fig_ef.update_layout(xaxis_title="Expected Volatility", yaxis_title="Expected Return", height=600, template="plotly_dark")
                 st.plotly_chart(fig_ef, use_container_width=True)
 
-            # TAB 3: BACKTEST
-            with tab3:
-                st.subheader(f"Dynamic Backtest ({rebal_freq} Rebalancing)")
+            # --- TAB 3: DYNAMIC BACKTEST ---
+            with t3:
+                st.subheader(f"Dynamic Backtest Analysis ({rebal_freq_ui} Rebalancing)")
                 
-                # Benchmark Calculation
+                # Calculate Static Benchmark (Equal Weight)
                 eq_weights = np.array([1/len(selected_tickers)] * len(selected_tickers))
-                # Simple static benchmark for comparison
                 bench_ret = returns.dot(eq_weights)
                 bench_curve = (1 + bench_ret).cumprod() * 100000
                 
                 fig_bt = go.Figure()
-                fig_bt.add_trace(go.Scatter(x=portfolio_equity_curve.index, y=portfolio_equity_curve, name="Active Strategy", line=dict(color='#00cc96', width=2)))
+                fig_bt.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve, name="Active Strategy", line=dict(color='#00cc96', width=2)))
                 fig_bt.add_trace(go.Scatter(x=bench_curve.index, y=bench_curve, name="Equal Weight Index", line=dict(color='#888', dash='dash')))
-                fig_bt.update_layout(title="Portfolio Value ($100k Initial)", template="plotly_dark", height=500)
+                fig_bt.update_layout(title="Equity Curve ($100k Initial)", template="plotly_dark", height=500, xaxis_title="Date", yaxis_title="Portfolio Value ($)")
                 st.plotly_chart(fig_bt, use_container_width=True)
                 
                 # Underwater Plot
-                running_max = portfolio_equity_curve.cummax()
-                drawdown = (portfolio_equity_curve - running_max) / running_max
+                running_max = equity_curve.cummax()
+                drawdown = (equity_curve - running_max) / running_max
+                
                 fig_dd = px.area(drawdown, title="Drawdown Profile", color_discrete_sequence=['#ef553b'])
-                fig_dd.update_layout(template="plotly_dark", height=300)
+                fig_dd.update_layout(template="plotly_dark", height=300, yaxis_title="Drawdown %")
                 st.plotly_chart(fig_dd, use_container_width=True)
 
-            # TAB 4: OHLC
-            with tab4:
-                t_sel = st.selectbox("View Asset", selected_tickers)
-                if t_sel in ohlc_data:
-                    d = ohlc_data[t_sel]
-                    fig = go.Figure(data=[go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close'])])
-                    fig.update_layout(title=f"{t_sel} Price Action", template="plotly_dark", height=600)
-                    st.plotly_chart(fig, use_container_width=True)
+            # --- TAB 4: OHLC ---
+            with t4:
+                tk_sel = st.selectbox("Inspect Asset", selected_tickers)
+                if tk_sel in ohlc_data:
+                    df_ohlc = ohlc_data[tk_sel]
+                    fig_c = go.Figure(data=[go.Candlestick(
+                        x=df_ohlc.index, 
+                        open=df_ohlc['Open'], high=df_ohlc['High'], 
+                        low=df_ohlc['Low'], close=df_ohlc['Close']
+                    )])
+                    fig_c.update_layout(height=600, template="plotly_dark", title=f"{tk_sel} Price Action")
+                    st.plotly_chart(fig_c, use_container_width=True)
+                else:
+                    st.warning("Detailed OHLC data unavailable for this ticker.")
 
-            # TAB 5: STRESS TEST
-            with tab5:
-                st.subheader("Macro Stress Test Scenarios")
-                scenarios = {'2008 GFC (-40%)': -0.40, 'Covid-19 (-30%)': -0.30, 'Rate Shock (-10%)': -0.10, 'Melt Up (+20%)': 0.20}
+            # --- TAB 5: STRESS TEST ---
+            with t5:
+                st.subheader("Macro Scenario Analysis")
+                st.info("Estimates portfolio impact based on Beta sensitivity to the Equal-Weighted Universe.")
+                
+                # Calculate Beta
+                bench_series = returns.mean(axis=1)
+                covariance = np.cov(port_ret_series, bench_series)[0][1]
+                variance = np.var(bench_series)
+                beta = covariance / variance
+                
+                scenarios = {
+                    '2008 Financial Crisis (-40%)': -0.40, 
+                    'Covid-19 Crash (-30%)': -0.30, 
+                    'Aggressive Rate Hike (-10%)': -0.10, 
+                    'Tech Bubble Burst (-20%)': -0.20,
+                    'Post-Recession Melt Up (+20%)': 0.20
+                }
+                
                 res_stress = []
-                
-                # Calculate Beta against Equal Weight Benchmark
-                bench_daily = returns.mean(axis=1)
-                beta = np.cov(port_rets, bench_daily)[0][1] / np.var(bench_daily)
-                
-                for n, s in scenarios.items():
-                    imp = s * beta
+                for name, shock in scenarios.items():
+                    imp = shock * beta
                     pnl = 100000 * imp
-                    res_stress.append({"Scenario": n, "Market": f"{s:.0%}", "Portfolio Impact": f"{imp:.2%}", "Est PnL": f"${pnl:,.0f}"})
+                    res_stress.append({
+                        "Scenario": name, 
+                        "Market Shock": f"{shock:.0%}", 
+                        "Est. Portfolio Impact": f"{imp:.2%}", 
+                        "Est. PnL ($100k)": f"${pnl:,.0f}"
+                    })
+                
                 st.table(pd.DataFrame(res_stress))
 
-            # TAB 6: ADVANCED VAR
-            with tab6:
-                st.subheader("⚠️ Comprehensive Risk Profile")
-                col_dist, col_stat = st.columns([2, 1])
+            # --- TAB 6: COMPARATIVE VAR ---
+            with t6:
+                st.subheader("⚠️ Comparative VaR & CVaR Engine")
+                st.markdown("Quantifies tail risk using three distinct statistical methodologies.")
                 
-                with col_dist:
-                    fig_v = go.Figure()
-                    fig_v.add_trace(go.Histogram(x=port_rets, nbinsx=100, histnorm='probability density', name='Returns', marker_color='#1f77b4', opacity=0.6))
-                    x = np.linspace(port_rets.min(), port_rets.max(), 100)
-                    fig_v.add_trace(go.Scatter(x=x, y=stats.norm.pdf(x, port_rets.mean(), port_rets.std()), mode='lines', name='Normal Dist', line=dict(color='white', dash='dash')))
-                    fig_v.add_vline(x=var_profile['Modified VaR (95%)'], line_dash="dot", line_color="red", annotation_text="Mod VaR 95%")
-                    fig_v.update_layout(title="Return Distribution vs Normal Curve", template="plotly_dark", height=450)
-                    st.plotly_chart(fig_v, use_container_width=True)
+                # 1. Methodology Comparison Chart
+                st.markdown("##### 1. Model Risk Comparison")
                 
-                with col_stat:
-                    st.markdown("### Tail Risk Metrics")
-                    st.metric("Skewness", f"{skew:.3f}")
-                    st.metric("Kurtosis", f"{kurt:.3f}")
+                # Reshape data for plotting
+                var_plot_data = []
+                for k, v in var_profile.items():
+                    if "VaR" in k and "CVaR" not in k:
+                        method_name = k.split("(")[0].strip()
+                        conf_level = k.split("(")[1].strip(")")
+                        var_plot_data.append({"Method": method_name, "Confidence": conf_level, "VaR": v})
+                        
+                df_var_plot = pd.DataFrame(var_plot_data)
+                
+                fig_bar = px.bar(
+                    df_var_plot, x="Confidence", y="VaR", color="Method", barmode="group",
+                    title="VaR Estimates by Methodology (Parametric vs Historical vs Modified)",
+                    color_discrete_sequence=['#636EFA', '#EF553B', '#00CC96'],
+                    text_auto='.2%'
+                )
+                fig_bar.update_layout(template="plotly_dark", height=400)
+                st.plotly_chart(fig_bar, use_container_width=True)
+                
+                # 2. Distribution Visualizer
+                st.markdown("##### 2. Return Distribution & Tail Risk (Visual CVaR)")
+                
+                c_dist, c_stat = st.columns([2, 1])
+                
+                with c_dist:
+                    fig_d = go.Figure()
+                    # Histogram
+                    fig_d.add_trace(go.Histogram(
+                        x=port_ret_series, nbinsx=100, histnorm='probability density', 
+                        name='Returns', marker_color='#1f77b4', opacity=0.5
+                    ))
+                    # Normal Curve
+                    x_rng = np.linspace(port_ret_series.min(), port_ret_series.max(), 100)
+                    fig_d.add_trace(go.Scatter(
+                        x=x_rng, y=stats.norm.pdf(x_rng, port_ret_series.mean(), port_ret_series.std()), 
+                        mode='lines', name='Normal Dist', line=dict(color='white', dash='dash')
+                    ))
+                    
+                    # Highlight CVaR Region (Tail)
+                    cutoff = var_profile['Historical VaR (95%)']
+                    x_tail = x_rng[x_rng <= cutoff]
+                    y_tail = stats.norm.pdf(x_tail, port_ret_series.mean(), port_ret_series.std())
+                    
+                    fig_d.add_trace(go.Scatter(
+                        x=x_tail, y=y_tail, fill='tozeroy', 
+                        fillcolor='rgba(239, 85, 59, 0.5)', line=dict(width=0), 
+                        name='CVaR (Expected Shortfall) Area'
+                    ))
+                    
+                    # Vertical Line for Modified VaR
+                    fig_d.add_vline(
+                        x=var_profile['Modified VaR (95%)'], 
+                        line_dash="dot", line_color="yellow", 
+                        annotation_text="Modified VaR 95%"
+                    )
+                    
+                    fig_d.update_layout(template="plotly_dark", height=450, title="Distribution with CVaR Shading")
+                    st.plotly_chart(fig_d, use_container_width=True)
+                
+                with c_stat:
+                    st.markdown("#### Higher Moments")
+                    st.metric("Skewness", f"{skew:.3f}", help="Negative skew = frequent small gains, rare large losses.")
+                    st.metric("Kurtosis", f"{kurt:.3f}", help="High kurtosis = Fat Tails (Extreme event risk).")
+                    
                     st.markdown("---")
+                    st.markdown("#### Detailed Metrics")
                     v_df = pd.DataFrame.from_dict(var_profile, orient='index', columns=['Value'])
                     v_df['Value'] = v_df['Value'].apply(lambda x: f"{x:.2%}")
                     st.table(v_df)
 
 else:
-    st.info("👈 Configure your Institutional Portfolio in the Sidebar.")
+    st.info("👈 Please configure the portfolio parameters in the sidebar to launch the engine.")
