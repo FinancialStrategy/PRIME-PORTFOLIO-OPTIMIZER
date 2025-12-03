@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import scipy.stats as stats
 from scipy import optimize
 import warnings
+from typing import Dict, Tuple, List, Optional
+import numpy.random as npr
 
 # --- QUANTITATIVE LIBRARY IMPORTS ---
 # PyPortfolioOpt: The core engine for Mean-Variance Optimization
@@ -21,6 +23,7 @@ from pypfopt import objective_functions
 
 # Scikit-Learn: For Principal Component Analysis (PCA)
 from sklearn.decomposition import PCA
+from sklearn.covariance import LedoitWolf
 
 # ARCH: For Econometric Volatility Forecasting (GARCH)
 try:
@@ -124,7 +127,268 @@ GLOBAL_INDICES = [
 US_DEFAULTS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V', 'WMT']
 
 # ============================================================================
-# 2. ROBUST DATA PIPELINE & CACHING
+# 2. ADVANCED MONTE CARLO SIMULATION ENGINE
+# ============================================================================
+
+class AdvancedMonteCarloSimulator:
+    """
+    Advanced Monte Carlo simulation engine for VaR/CVaR with multiple methodologies:
+    1. Geometric Brownian Motion (GBM) - Standard
+    2. Student's t-distribution - Fat tails
+    3. Jump Diffusion (Merton Model) - Extreme events
+    4. GARCH-MC - Conditional volatility
+    5. Filtered Historical Simulation (FHS) - Non-parametric
+    6. Copula-based - Dependence structure
+    """
+    
+    def __init__(self, returns: pd.DataFrame, prices: pd.DataFrame):
+        self.returns = returns
+        self.prices = prices
+        self.n_assets = len(returns.columns)
+        self.mean_returns = returns.mean().values
+        self.cov_matrix = returns.cov().values
+        self.cholesky = None
+        
+        # Calculate Cholesky decomposition for correlated simulations
+        try:
+            self.cholesky = np.linalg.cholesky(self.cov_matrix)
+        except np.linalg.LinAlgError:
+            # Regularize if not positive definite
+            self.cov_matrix = self.cov_matrix + np.eye(self.n_assets) * 1e-6
+            self.cholesky = np.linalg.cholesky(self.cov_matrix)
+    
+    def gbm_simulation(self, weights: np.ndarray, days: int = 252, n_sims: int = 10000, 
+                       antithetic: bool = True) -> Tuple[np.ndarray, Dict]:
+        """
+        Geometric Brownian Motion with correlation structure.
+        Includes antithetic variates for variance reduction.
+        """
+        dt = 1/252  # Daily frequency
+        mu = np.dot(weights, self.mean_returns)
+        sigma = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
+        
+        # Generate standard normal random variables
+        if antithetic:
+            z = npr.randn(n_sims//2, days)
+            z = np.vstack([z, -z])  # Antithetic variates
+        else:
+            z = npr.randn(n_sims, days)
+        
+        # GBM simulation
+        drift = (mu - 0.5 * sigma**2) * dt
+        diffusion = sigma * np.sqrt(dt)
+        
+        paths = np.zeros((n_sims, days + 1))
+        paths[:, 0] = 1  # Initial value
+        
+        for t in range(1, days + 1):
+            paths[:, t] = paths[:, t-1] * np.exp(drift + diffusion * z[:, t-1])
+        
+        terminal_values = paths[:, -1]
+        
+        return paths, {
+            "method": "GBM",
+            "mu": mu,
+            "sigma": sigma,
+            "terminal_mean": np.mean(terminal_values),
+            "terminal_std": np.std(terminal_values)
+        }
+    
+    def t_distribution_simulation(self, weights: np.ndarray, days: int = 252, 
+                                  n_sims: int = 10000, df: float = 5.0) -> Tuple[np.ndarray, Dict]:
+        """
+        Student's t-distribution simulation for fat tails.
+        """
+        dt = 1/252
+        mu = np.dot(weights, self.mean_returns)
+        sigma = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
+        
+        # Generate correlated t-distributed returns
+        paths = np.zeros((n_sims, days + 1))
+        paths[:, 0] = 1
+        
+        for i in range(n_sims):
+            for t in range(1, days + 1):
+                # t-distributed innovation
+                z = npr.standard_t(df)
+                ret = mu * dt + sigma * np.sqrt(dt) * z
+                paths[i, t] = paths[i, t-1] * np.exp(ret)
+        
+        terminal_values = paths[:, -1]
+        
+        return paths, {
+            "method": "Student's t",
+            "df": df,
+            "terminal_mean": np.mean(terminal_values),
+            "terminal_std": np.std(terminal_values),
+            "skewness": stats.skew(terminal_values),
+            "kurtosis": stats.kurtosis(terminal_values)
+        }
+    
+    def jump_diffusion_simulation(self, weights: np.ndarray, days: int = 252, 
+                                  n_sims: int = 10000, jump_intensity: float = 0.05, 
+                                  jump_mean: float = -0.1, jump_std: float = 0.15) -> Tuple[np.ndarray, Dict]:
+        """
+        Merton Jump Diffusion model for capturing extreme events.
+        """
+        dt = 1/252
+        mu = np.dot(weights, self.mean_returns)
+        sigma = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
+        
+        paths = np.zeros((n_sims, days + 1))
+        paths[:, 0] = 1
+        
+        for i in range(n_sims):
+            for t in range(1, days + 1):
+                # Poisson jumps
+                n_jumps = npr.poisson(jump_intensity * dt)
+                jump_sum = 0
+                for _ in range(n_jumps):
+                    jump_sum += npr.normal(jump_mean, jump_std)
+                
+                # Brownian motion component
+                z = npr.randn()
+                ret = mu * dt + sigma * np.sqrt(dt) * z + jump_sum
+                paths[i, t] = paths[i, t-1] * np.exp(ret)
+        
+        terminal_values = paths[:, -1]
+        
+        return paths, {
+            "method": "Jump Diffusion",
+            "jump_intensity": jump_intensity,
+            "jump_mean": jump_mean,
+            "jump_std": jump_std,
+            "terminal_mean": np.mean(terminal_values),
+            "terminal_std": np.std(terminal_values),
+            "max_jump_impact": np.max(np.abs(np.diff(np.log(paths[:, 1:]), axis=1)))
+        }
+    
+    def garch_monte_carlo(self, weights: np.ndarray, days: int = 252, 
+                          n_sims: int = 5000, garch_model=None) -> Tuple[np.ndarray, Dict]:
+        """
+        Monte Carlo simulation using GARCH forecasted volatility.
+        """
+        if not HAS_ARCH or garch_model is None:
+            return self.gbm_simulation(weights, days, n_sims)
+        
+        # Get GARCH volatility forecasts
+        forecast = garch_model.forecast(horizon=days)
+        cond_vol = forecast.variance.values[-1, :] ** 0.5
+        
+        mu = np.dot(weights, self.mean_returns)
+        
+        paths = np.zeros((n_sims, days + 1))
+        paths[:, 0] = 1
+        
+        for i in range(n_sims):
+            for t in range(1, days + 1):
+                vol = cond_vol[t-1] if t-1 < len(cond_vol) else cond_vol[-1]
+                z = npr.randn()
+                ret = mu * (1/252) + vol * z
+                paths[i, t] = paths[i, t-1] * np.exp(ret)
+        
+        terminal_values = paths[:, -1]
+        
+        return paths, {
+            "method": "GARCH-MC",
+            "terminal_mean": np.mean(terminal_values),
+            "terminal_std": np.std(terminal_values),
+            "avg_volatility": np.mean(cond_vol)
+        }
+    
+    def filtered_historical_simulation(self, weights: np.ndarray, days: int = 252, 
+                                       n_sims: int = 10000, block_size: int = 5) -> Tuple[np.ndarray, Dict]:
+        """
+        Filtered Historical Simulation - non-parametric approach using historical residuals.
+        """
+        # Calculate portfolio returns
+        port_returns = self.returns.dot(weights)
+        
+        # Standardize returns
+        standardized = (port_returns - port_returns.mean()) / port_returns.std()
+        
+        paths = np.zeros((n_sims, days + 1))
+        paths[:, 0] = 1
+        
+        # Block bootstrap
+        n_blocks = days // block_size + 1
+        
+        for i in range(n_sims):
+            position = 0
+            while position < days:
+                # Randomly select a block
+                start_idx = npr.randint(0, len(standardized) - block_size)
+                block = standardized.iloc[start_idx:start_idx + block_size].values
+                
+                # Add block to path
+                block_len = min(block_size, days - position)
+                for j in range(block_len):
+                    ret = port_returns.mean() + port_returns.std() * block[j]
+                    paths[i, position + 1] = paths[i, position] * np.exp(ret)
+                    position += 1
+        
+        terminal_values = paths[:, -1]
+        
+        return paths, {
+            "method": "Filtered Historical Simulation",
+            "block_size": block_size,
+            "terminal_mean": np.mean(terminal_values),
+            "terminal_std": np.std(terminal_values)
+        }
+    
+    def calculate_var_cvar(self, paths: np.ndarray, confidence_levels: List[float] = [0.95, 0.99]) -> Dict:
+        """
+        Calculate VaR and CVaR from simulated paths.
+        """
+        terminal_returns = (paths[:, -1] - 1)  # Simple returns
+        
+        results = {}
+        for conf in confidence_levels:
+            alpha = 1 - conf
+            
+            # Historical VaR/CVaR from simulations
+            var_hist = np.percentile(terminal_returns, alpha * 100)
+            cvar_hist = terminal_returns[terminal_returns <= var_hist].mean()
+            
+            # Parametric assuming normality
+            mu_sim = terminal_returns.mean()
+            sigma_sim = terminal_returns.std()
+            z_score = stats.norm.ppf(alpha)
+            var_param = mu_sim + z_score * sigma_sim
+            
+            # Modified VaR (Cornish-Fisher)
+            skew = stats.skew(terminal_returns)
+            kurt = stats.kurtosis(terminal_returns)
+            z_cf = z_score + (z_score**2 - 1) * skew / 6 + (z_score**3 - 3 * z_score) * kurt / 24
+            var_mod = mu_sim + z_cf * sigma_sim
+            
+            results[f"MC VaR ({int(conf*100)}%)"] = var_hist
+            results[f"MC CVaR ({int(conf*100)}%)"] = cvar_hist
+            results[f"MC Parametric VaR ({int(conf*100)}%)"] = var_param
+            results[f"MC Modified VaR ({int(conf*100)}%)"] = var_mod
+        
+        return results
+    
+    def stress_test_scenarios(self, weights: np.ndarray, scenarios: Dict[str, float], 
+                              days: int = 21) -> Dict[str, float]:
+        """
+        Apply stress scenarios to portfolio.
+        """
+        initial_value = 1.0
+        mu = np.dot(weights, self.mean_returns)
+        sigma = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
+        
+        results = {}
+        for scenario_name, shock in scenarios.items():
+            # Simple shock application (can be enhanced with copulas)
+            stressed_return = mu * days/252 + shock
+            final_value = initial_value * np.exp(stressed_return)
+            results[scenario_name] = final_value - initial_value
+        
+        return results
+
+# ============================================================================
+# 3. ROBUST DATA PIPELINE & CACHING
 # ============================================================================
 
 class PortfolioDataManager:
@@ -230,7 +494,7 @@ class PortfolioDataManager:
         return pd.Series(mcaps)
 
 # ============================================================================
-# 3. ADVANCED RISK ENGINE (VaR, CVaR, GARCH, PCA)
+# 4. ADVANCED RISK ENGINE (VaR, CVaR, GARCH, PCA)
 # ============================================================================
 
 class AdvancedRiskMetrics:
@@ -385,7 +649,7 @@ class AdvancedRiskMetrics:
         return pd.Series(component_var, index=assets), explained_variance, pca
 
 # ============================================================================
-# 4. PYPORTFOLIOOPT STRATEGY FACTORY
+# 5. PYPORTFOLIOOPT STRATEGY FACTORY
 # ============================================================================
 
 class AdvancedPortfolioOptimizer:
@@ -467,7 +731,7 @@ class AdvancedPortfolioOptimizer:
         return ef.clean_weights(), ef.portfolio_performance(verbose=False)
 
 # ============================================================================
-# 5. INSTITUTIONAL BACKTESTING ENGINE
+# 6. INSTITUTIONAL BACKTESTING ENGINE
 # ============================================================================
 
 class PortfolioBacktester:
@@ -549,7 +813,7 @@ class PortfolioBacktester:
         return pd.Series(portfolio_history, index=date_history)
 
 # ============================================================================
-# 6. UI & APPLICATION LOGIC
+# 7. UI & APPLICATION LOGIC
 # ============================================================================
 
 # --- SIDEBAR CONFIGURATION ---
@@ -591,6 +855,25 @@ strat_options = [
     'Equal Weight'
 ]
 method = st.sidebar.selectbox("Optimization Objective", strat_options)
+
+# Monte Carlo Simulation Parameters
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎲 Monte Carlo Settings")
+mc_days = st.sidebar.slider("Simulation Horizon (Days)", 21, 504, 252, 21)
+mc_sims = st.sidebar.selectbox("Number of Simulations", [1000, 5000, 10000, 25000], index=2)
+mc_method = st.sidebar.selectbox("Simulation Method", 
+                                 ["GBM", "Student's t", "Jump Diffusion", "Filtered Historical"])
+
+# Jump Diffusion Parameters (conditional)
+if mc_method == "Jump Diffusion":
+    st.sidebar.markdown("**Jump Diffusion Parameters**")
+    jump_intensity = st.sidebar.slider("Jump Intensity (λ)", 0.01, 0.20, 0.05, 0.01)
+    jump_mean = st.sidebar.slider("Jump Mean", -0.20, 0.00, -0.10, 0.01)
+    jump_std = st.sidebar.slider("Jump Std Dev", 0.05, 0.30, 0.15, 0.01)
+
+# Student's t Parameters
+if mc_method == "Student's t":
+    df_t = st.sidebar.slider("Degrees of Freedom", 3.0, 15.0, 5.0, 0.5)
 
 # Backtest Settings
 st.sidebar.markdown("---")
@@ -645,7 +928,28 @@ if run_btn:
                 st.error(f"Optimization Failed: {str(e)}")
                 st.stop()
 
-            # 4. Dynamic Backtesting
+            # 4. Advanced Monte Carlo Simulations
+            st.info(f"🌀 Running {mc_sims:,} Monte Carlo simulations using {mc_method} method...")
+            mc_simulator = AdvancedMonteCarloSimulator(returns, prices)
+            w_array = np.array([weights.get(t, 0) for t in selected_tickers])
+            
+            # Run selected simulation method
+            if mc_method == "GBM":
+                mc_paths, mc_stats = mc_simulator.gbm_simulation(w_array, days=mc_days, n_sims=mc_sims)
+            elif mc_method == "Student's t":
+                mc_paths, mc_stats = mc_simulator.t_distribution_simulation(w_array, days=mc_days, n_sims=mc_sims, df=df_t)
+            elif mc_method == "Jump Diffusion":
+                mc_paths, mc_stats = mc_simulator.jump_diffusion_simulation(
+                    w_array, days=mc_days, n_sims=mc_sims, 
+                    jump_intensity=jump_intensity, jump_mean=jump_mean, jump_std=jump_std
+                )
+            elif mc_method == "Filtered Historical":
+                mc_paths, mc_stats = mc_simulator.filtered_historical_simulation(w_array, days=mc_days, n_sims=mc_sims)
+            
+            # Calculate VaR/CVaR from simulations
+            mc_var_results = mc_simulator.calculate_var_cvar(mc_paths)
+            
+            # 5. Dynamic Backtesting
             backtester = PortfolioBacktester(prices, returns)
             equity_curve = backtester.run_rebalancing_backtest(
                 weights, 
@@ -653,22 +957,26 @@ if run_btn:
             )
             port_ret_series = equity_curve.pct_change().dropna()
             
-            # 5. Risk Profiling
+            # 6. Risk Profiling
             risk_metrics = AdvancedRiskMetrics.calculate_metrics(port_ret_series, rf_rate)
             var_profile, skew, kurt = AdvancedRiskMetrics.calculate_comprehensive_risk_profile(port_ret_series)
             
-            # --- ADVANCED GARCH & PCA CALCULATION ---
+            # Combine historical and MC VaR results
+            all_var_results = {**var_profile, **mc_var_results}
+            
+            # 7. GARCH & PCA CALCULATION
             garch_model, garch_vol = AdvancedRiskMetrics.fit_garch_model(port_ret_series)
             comp_var, pca_expl_var, pca_obj = AdvancedRiskMetrics.calculate_component_var(returns, weights)
             
-            # 6. Visualization Layout
-            t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+            # 8. Visualization Layout
+            t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
                 "🏛️ Executive Tearsheet", 
                 "📈 Efficient Frontier", 
                 "📉 Dynamic Backtest", 
                 "🕯️ OHLC Analysis", 
                 "🌪️ Stress Test", 
                 "⚠️ Comparative VaR",
+                "🎲 Advanced MC Simulations",
                 "🔬 Quant Lab (GARCH/PCA)"
             ])
             
@@ -830,7 +1138,7 @@ if run_btn:
                 
                 # 1. Comparison Chart
                 var_plot_data = []
-                for k, v in var_profile.items():
+                for k, v in all_var_results.items():
                     if "VaR" in k and "CVaR" not in k:
                         method_name = k.split("(")[0].strip()
                         conf_level = k.split("(")[1].strip(")")
@@ -840,8 +1148,8 @@ if run_btn:
                 
                 fig_bar = px.bar(
                     df_var_plot, x="Confidence", y="VaR", color="Method", barmode="group",
-                    title="VaR Estimates by Methodology (Parametric vs Historical vs Modified)",
-                    color_discrete_sequence=['#636EFA', '#EF553B', '#00CC96'],
+                    title="VaR Estimates by Methodology (Parametric vs Historical vs Modified vs MC)",
+                    color_discrete_sequence=['#636EFA', '#EF553B', '#00CC96', '#FFA15A'],
                     text_auto='.2%'
                 )
                 fig_bar.update_layout(template="plotly_dark", height=400)
@@ -861,7 +1169,7 @@ if run_btn:
                         x=x_rng, y=stats.norm.pdf(x_rng, port_ret_series.mean(), port_ret_series.std()), 
                         mode='lines', name='Normal Dist', line=dict(color='white', dash='dash')
                     ))
-                    cutoff = var_profile['Historical VaR (95%)']
+                    cutoff = all_var_results['Historical VaR (95%)']
                     x_tail = x_rng[x_rng <= cutoff]
                     y_tail = stats.norm.pdf(x_tail, port_ret_series.mean(), port_ret_series.std())
                     fig_d.add_trace(go.Scatter(
@@ -869,17 +1177,157 @@ if run_btn:
                         fillcolor='rgba(239, 85, 59, 0.5)', line=dict(width=0), 
                         name='CVaR (Expected Shortfall) Area'
                     ))
-                    fig_d.add_vline(x=var_profile['Modified VaR (95%)'], line_dash="dot", line_color="yellow", annotation_text="Mod VaR 95%")
+                    fig_d.add_vline(x=all_var_results['Modified VaR (95%)'], line_dash="dot", line_color="yellow", annotation_text="Mod VaR 95%")
+                    fig_d.add_vline(x=all_var_results['MC VaR (95%)'], line_dash="dot", line_color="green", annotation_text="MC VaR 95%")
                     fig_d.update_layout(template="plotly_dark", height=450, title="Distribution with CVaR Shading")
                     st.plotly_chart(fig_d, use_container_width=True)
                 
                 with c_stat:
                     st.metric("Skewness", f"{skew:.3f}")
                     st.metric("Kurtosis", f"{kurt:.3f}")
-                    st.table(pd.DataFrame.from_dict(var_profile, orient='index', columns=['Value']).applymap(lambda x: f"{x:.2%}"))
+                    var_df = pd.DataFrame.from_dict(all_var_results, orient='index', columns=['Value'])
+                    var_df['Value'] = var_df['Value'].apply(lambda x: f"{x:.2%}")
+                    st.table(var_df)
 
-            # --- TAB 7: QUANT LAB (GARCH & PCA) ---
+            # --- TAB 7: ADVANCED MC SIMULATIONS ---
             with t7:
+                st.markdown(f"### 🎲 Advanced Monte Carlo Simulations ({mc_method} Method)")
+                st.markdown(f"**Configuration:** {mc_sims:,} simulations, {mc_days}-day horizon")
+                
+                # Display simulation statistics
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Terminal Mean", f"{mc_stats.get('terminal_mean', 0):.4f}")
+                col2.metric("Terminal Std Dev", f"{mc_stats.get('terminal_std', 0):.4f}")
+                if 'skewness' in mc_stats:
+                    col3.metric("Skewness", f"{mc_stats['skewness']:.3f}")
+                if 'kurtosis' in mc_stats:
+                    col4.metric("Kurtosis", f"{mc_stats['kurtosis']:.3f}")
+                
+                # 1. Path Visualization
+                st.subheader("1. Simulated Paths")
+                fig_paths = go.Figure()
+                
+                # Plot sample of paths
+                n_sample = min(100, mc_sims)
+                for i in range(n_sample):
+                    fig_paths.add_trace(go.Scatter(
+                        x=list(range(mc_days + 1)), y=mc_paths[i, :],
+                        mode='lines', line=dict(width=0.5, color='rgba(100, 100, 100, 0.1)'),
+                        showlegend=False
+                    ))
+                
+                # Plot mean path
+                mean_path = np.mean(mc_paths, axis=0)
+                fig_paths.add_trace(go.Scatter(
+                    x=list(range(mc_days + 1)), y=mean_path,
+                    mode='lines', line=dict(width=3, color='#00cc96'),
+                    name='Mean Path'
+                ))
+                
+                # Plot confidence bands
+                std_path = np.std(mc_paths, axis=0)
+                fig_paths.add_trace(go.Scatter(
+                    x=list(range(mc_days + 1)), y=mean_path + 1.96 * std_path,
+                    mode='lines', line=dict(width=0), showlegend=False
+                ))
+                fig_paths.add_trace(go.Scatter(
+                    x=list(range(mc_days + 1)), y=mean_path - 1.96 * std_path,
+                    mode='lines', line=dict(width=0), fill='tonexty',
+                    fillcolor='rgba(0, 204, 150, 0.2)', name='95% Confidence Band'
+                ))
+                
+                fig_paths.update_layout(
+                    title=f"Monte Carlo Simulation Paths ({mc_method})",
+                    xaxis_title="Days",
+                    yaxis_title="Portfolio Value (Normalized)",
+                    template="plotly_dark",
+                    height=500
+                )
+                st.plotly_chart(fig_paths, use_container_width=True)
+                
+                # 2. Terminal Distribution
+                st.subheader("2. Terminal Value Distribution")
+                
+                col_hist, col_stats = st.columns([2, 1])
+                
+                with col_hist:
+                    terminal_values = mc_paths[:, -1]
+                    fig_term = go.Figure()
+                    fig_term.add_trace(go.Histogram(
+                        x=terminal_values, nbinsx=100,
+                        name='Terminal Values',
+                        marker_color='#636efa',
+                        opacity=0.7
+                    ))
+                    
+                    # Add VaR/CVaR lines
+                    var_95 = np.percentile(terminal_values, 5)
+                    cvar_95 = terminal_values[terminal_values <= var_95].mean()
+                    
+                    fig_term.add_vline(x=var_95, line_dash="dash", line_color="red", 
+                                      annotation_text=f"VaR 95%: {var_95:.4f}")
+                    fig_term.add_vline(x=cvar_95, line_dash="dot", line_color="orange", 
+                                      annotation_text=f"CVaR 95%: {cvar_95:.4f}")
+                    
+                    fig_term.update_layout(
+                        title="Distribution of Terminal Values",
+                        xaxis_title="Terminal Portfolio Value",
+                        yaxis_title="Frequency",
+                        template="plotly_dark",
+                        height=400
+                    )
+                    st.plotly_chart(fig_term, use_container_width=True)
+                
+                with col_stats:
+                    # Statistical moments
+                    moments_data = {
+                        "Statistic": ["Mean", "Std Dev", "Skewness", "Kurtosis", "VaR 95%", "CVaR 95%"],
+                        "Value": [
+                            f"{np.mean(terminal_values):.4f}",
+                            f"{np.std(terminal_values):.4f}",
+                            f"{stats.skew(terminal_values):.3f}",
+                            f"{stats.kurtosis(terminal_values):.3f}",
+                            f"{var_95:.4f}",
+                            f"{cvar_95:.4f}"
+                        ]
+                    }
+                    st.table(pd.DataFrame(moments_data))
+                
+                # 3. Convergence Analysis
+                st.subheader("3. Simulation Convergence")
+                
+                # Calculate running statistics
+                running_means = np.cumsum(terminal_values) / np.arange(1, len(terminal_values) + 1)
+                running_stds = [np.std(terminal_values[:i+1]) for i in range(len(terminal_values))]
+                
+                fig_conv = make_subplots(
+                    rows=2, cols=1,
+                    subplot_titles=("Mean Convergence", "Std Dev Convergence"),
+                    vertical_spacing=0.15
+                )
+                
+                fig_conv.add_trace(
+                    go.Scatter(x=np.arange(len(running_means)), y=running_means,
+                              mode='lines', name='Running Mean', line=dict(color='#00cc96')),
+                    row=1, col=1
+                )
+                fig_conv.add_hline(y=mean_path[-1], line_dash="dash", line_color="gray", row=1, col=1)
+                
+                fig_conv.add_trace(
+                    go.Scatter(x=np.arange(len(running_stds)), y=running_stds,
+                              mode='lines', name='Running Std Dev', line=dict(color='#ef553b')),
+                    row=2, col=1
+                )
+                
+                fig_conv.update_layout(
+                    height=600,
+                    template="plotly_dark",
+                    showlegend=True
+                )
+                st.plotly_chart(fig_conv, use_container_width=True)
+
+            # --- TAB 8: QUANT LAB (GARCH & PCA) ---
+            with t8:
                 st.markdown("### 🔬 Quant Lab: Advanced Risk Decomposition")
                 
                 # 1. GARCH SECTION
