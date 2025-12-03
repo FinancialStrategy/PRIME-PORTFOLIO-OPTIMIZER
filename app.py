@@ -19,6 +19,9 @@ from pypfopt.hierarchical_portfolio import HRPOpt
 from pypfopt.black_litterman import BlackLittermanModel
 from pypfopt import objective_functions
 
+# Scikit-Learn: For Principal Component Analysis (PCA)
+from sklearn.decomposition import PCA
+
 # ARCH: For Econometric Volatility Forecasting (GARCH)
 try:
     import arch
@@ -136,7 +139,7 @@ class PortfolioDataManager:
         """
         Fetches OHLCV data for a list of tickers.
         Handles the complexity of yfinance returning different structures
-        based on the number of tickers requested (Series vs DataFrame vs MultiIndex).
+        based on the number of tickers requested.
         """
         if not tickers:
             return pd.DataFrame(), {}
@@ -227,13 +230,18 @@ class PortfolioDataManager:
         return pd.Series(mcaps)
 
 # ============================================================================
-# 3. ADVANCED RISK ENGINE (VaR, CVaR, GARCH)
+# 3. ADVANCED RISK ENGINE (VaR, CVaR, GARCH, PCA)
 # ============================================================================
 
 class AdvancedRiskMetrics:
     """
     Institutional Risk Engine.
-    Calculates non-normal risk metrics including Skewness-adjusted VaR.
+    Includes:
+    1. Standard Metrics (Sharpe, Sortino)
+    2. Tail Risk (VaR/CVaR)
+    3. GARCH(1,1) Econometrics
+    4. Component VaR (Risk Decomposition)
+    5. PCA Analysis
     """
 
     @staticmethod
@@ -308,7 +316,6 @@ class AdvancedRiskMetrics:
             var_mod = mu + z_cf * sigma
             
             # D. Expected Shortfall (CVaR)
-            # Average loss assuming we are in the tail (using Historical distribution)
             tail_losses = returns[returns <= var_hist]
             cvar_hist = tail_losses.mean() if len(tail_losses) > 0 else var_hist
             
@@ -320,6 +327,62 @@ class AdvancedRiskMetrics:
             results[f"CVaR ({tag})"] = cvar_hist
             
         return results, skew, kurt
+
+    @staticmethod
+    def fit_garch_model(returns):
+        """
+        Fits a GARCH(1,1) model to the portfolio returns.
+        Returns the model summary and the conditional volatility series.
+        """
+        if not HAS_ARCH:
+            return None, None
+        
+        try:
+            # Scale returns by 100 for better convergence
+            scaled_returns = returns * 100
+            am = arch.arch_model(scaled_returns, vol='Garch', p=1, q=1, dist='Normal')
+            res = am.fit(disp='off')
+            
+            # Get Conditional Volatility (rescale back)
+            cond_vol = res.conditional_volatility / 100
+            return res, cond_vol
+        except Exception as e:
+            st.warning(f"GARCH Fit Failed: {e}")
+            return None, None
+
+    @staticmethod
+    def calculate_component_var(returns_df, weights_dict, confidence=0.95):
+        """
+        Decomposes VaR into asset-level contributions (Component VaR)
+        and performs Principal Component Analysis (PCA).
+        """
+        alpha = 1 - confidence
+        
+        # Align weights with dataframe columns
+        assets = returns_df.columns
+        w = np.array([weights_dict.get(a, 0) for a in assets])
+        
+        # Covariance Matrix
+        cov_matrix = returns_df.cov()
+        
+        # Portfolio Std Dev
+        port_var = np.dot(w.T, np.dot(cov_matrix, w))
+        port_std = np.sqrt(port_var)
+        
+        # Marginal Contribution to Risk (MCR)
+        # MCR = (Cov * w) / port_std
+        mcr = np.dot(cov_matrix, w) / port_std
+        
+        # Component VaR = weight * MCR * Z_score (approximation)
+        z_score = abs(stats.norm.ppf(alpha))
+        component_var = w * mcr * z_score
+        
+        # PCA Analysis for Factor Strength
+        pca = PCA()
+        pca.fit(returns_df)
+        explained_variance = pca.explained_variance_ratio_
+        
+        return pd.Series(component_var, index=assets), explained_variance, pca
 
 # ============================================================================
 # 4. PYPORTFOLIOOPT STRATEGY FACTORY
@@ -337,7 +400,6 @@ class AdvancedPortfolioOptimizer:
         # Calculate Expected Returns (Mean Historical)
         self.mu = expected_returns.mean_historical_return(prices)
         # Calculate Covariance Matrix (Sample Covariance)
-        # Note: Could switch to Ledoit-Wolf shrinkage for better stability
         self.S = risk_models.sample_cov(prices)
     
     def optimize(self, method, risk_free_rate=0.02, target_vol=0.10, target_ret=0.20, risk_aversion=1.0):
@@ -388,7 +450,6 @@ class AdvancedPortfolioOptimizer:
         """
         Black-Litterman Model.
         Combines Market Equilibrium (CAPM) with Investor Views.
-        (Here we use 'neutral' views for calculating the Equilibrium/Posterior)
         """
         # 1. Calculate Risk Aversion (Delta)
         delta = risk_models.black_litterman.market_implied_risk_aversion(self.prices)
@@ -424,11 +485,7 @@ class PortfolioBacktester:
         
     def run_rebalancing_backtest(self, weights, initial_capital=100000, rebalance_freq='Q', cost_bps=10):
         """
-        Simulates the portfolio equity curve.
-        
-        :param weights: Target dictionary of weights {ticker: 0.5, ...}
-        :param rebalance_freq: 'M' (Month), 'Q' (Quarter), 'Y' (Year)
-        :param cost_bps: Basis points cost per trade (slippage + comms)
+        Simulates the portfolio equity curve with transaction costs.
         """
         # 1. Setup Data Structures
         assets = self.returns.columns
@@ -442,7 +499,6 @@ class PortfolioBacktester:
         
         # Create a boolean mask for fast lookup inside loop
         rebalance_mask = pd.Series(False, index=self.prices.index)
-        # We need to intersect dates because resampling might produce weekends/holidays
         valid_dates = [d for d in dates if d in self.prices.index]
         rebalance_mask.loc[valid_dates] = True
         
@@ -451,11 +507,9 @@ class PortfolioBacktester:
         current_prices = self.prices.iloc[0].values
         
         # Initial Allocation
-        # Shares = (Capital * Weight) / Price
         current_shares = (cash * w_target) / current_prices
         
         # Initial Transaction Cost
-        # Assuming we start from 0 holdings to full allocation
         initial_volume = cash
         cash -= initial_volume * (cost_bps / 10000)
         
@@ -473,7 +527,7 @@ class PortfolioBacktester:
             # B. Rebalancing Logic
             if rebalance_mask.loc[date]:
                 # 1. Calculate Target Holdings
-                target_value = portfolio_value # We assume fully invested
+                target_value = portfolio_value 
                 target_exposure = target_value * w_target
                 target_shares = target_exposure / market_prices
                 
@@ -485,8 +539,7 @@ class PortfolioBacktester:
                 cost = turnover_value * (cost_bps / 10000)
                 portfolio_value -= cost
                 
-                # 4. Update Holdings (After cost deduction)
-                # Recalculate based on new net value
+                # 4. Update Holdings
                 current_shares = (portfolio_value * w_target) / market_prices
                 
             # Append History
@@ -532,7 +585,7 @@ strat_options = [
     'Efficient Risk', 
     'Efficient Return', 
     'Max Quadratic Utility', 
-    'Critical Line Algorithm (CLA)', # Added
+    'Critical Line Algorithm (CLA)', 
     'Hierarchical Risk Parity (HRP)', 
     'Black-Litterman', 
     'Equal Weight'
@@ -604,14 +657,19 @@ if run_btn:
             risk_metrics = AdvancedRiskMetrics.calculate_metrics(port_ret_series, rf_rate)
             var_profile, skew, kurt = AdvancedRiskMetrics.calculate_comprehensive_risk_profile(port_ret_series)
             
+            # --- ADVANCED GARCH & PCA CALCULATION ---
+            garch_model, garch_vol = AdvancedRiskMetrics.fit_garch_model(port_ret_series)
+            comp_var, pca_expl_var, pca_obj = AdvancedRiskMetrics.calculate_component_var(returns, weights)
+            
             # 6. Visualization Layout
-            t1, t2, t3, t4, t5, t6 = st.tabs([
+            t1, t2, t3, t4, t5, t6, t7 = st.tabs([
                 "🏛️ Executive Tearsheet", 
                 "📈 Efficient Frontier", 
                 "📉 Dynamic Backtest", 
                 "🕯️ OHLC Analysis", 
                 "🌪️ Stress Test", 
-                "⚠️ Comparative VaR"
+                "⚠️ Comparative VaR",
+                "🔬 Quant Lab (GARCH/PCA)"
             ])
             
             # --- TAB 1: EXECUTIVE TEARSHEET ---
@@ -664,52 +722,21 @@ if run_btn:
                     fig_pie.update_layout(title="Target Allocation", showlegend=False, height=380, template="plotly_dark", margin=dict(l=40, r=40, t=50, b=40))
                     st.plotly_chart(fig_pie, use_container_width=True)
 
-                # Monthly Heatmap & Drawdowns
-                col_heat, col_dd = st.columns([1.5, 1])
-                with col_heat:
-                    st.markdown("**📅 Monthly Returns Heatmap**")
-                    monthly_ret = port_ret_series.resample('M').apply(lambda x: (1+x).prod()-1)
-                    m_df = pd.DataFrame(monthly_ret, columns=['Ret'])
-                    m_df['Y'] = m_df.index.year
-                    m_df['M'] = m_df.index.strftime('%b')
-                    piv = m_df.pivot(index='Y', columns='M', values='Ret')
-                    # Sort months correctly
-                    month_order = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-                    piv = piv.reindex(columns=month_order)
-                    
-                    fig_heat = px.imshow(piv, color_continuous_scale="RdYlGn", text_auto='.1%', aspect="auto")
-                    fig_heat.update_layout(height=350, template="plotly_dark")
-                    st.plotly_chart(fig_heat, use_container_width=True)
-                
-                with col_dd:
-                    st.markdown("**📉 Top 5 Daily Drawdowns**")
-                    worst_days = port_ret_series.nsmallest(5)
-                    dd_df = pd.DataFrame({
-                        "Date": worst_days.index.strftime('%Y-%m-%d'), 
-                        "Loss": worst_days.values
-                    })
-                    dd_df['Loss'] = dd_df['Loss'].apply(lambda x: f"{x:.2%}")
-                    st.table(dd_df)
-
             # --- TAB 2: EFFICIENT FRONTIER ---
             with t2:
-                st.subheader("Efficient Frontier Simulation")
-                st.info("Monte Carlo simulation of 25,000 random portfolios to visualize the risk/return landscape.")
+                st.subheader("Efficient Frontier Simulation (25,000 Runs)")
                 
                 n_sims = 25000
                 w_rand = np.random.dirichlet(np.ones(len(selected_tickers)), n_sims)
                 
-                # FIX: Explicit Numpy Conversion to prevent Pandas Index mismatch error
+                # 1. FIX: Explicit Numpy Conversion to prevent Pandas Index mismatch error
                 mu_np = optimizer.mu.to_numpy()
                 S_np = optimizer.S.to_numpy()
                 
-                # 1. Vectorized Return Calculation
-                # (25000, N) @ (N,) -> (25000,)
+                # 2. Vectorized Return Calculation: (25000, N) @ (N,) -> (25000,)
                 r_arr = w_rand @ mu_np
                 
-                # 2. Vectorized Volatility Calculation
-                # Efficiently compute diagonal of (w @ S @ w.T) without creating full matrix
-                # Variance = sum( (w @ S) * w, axis=1 )
+                # 3. Vectorized Volatility Calculation: Variance = sum( (w @ S) * w, axis=1 )
                 v_arr = np.sqrt(np.sum((w_rand @ S_np) * w_rand, axis=1))
                 
                 s_arr = (r_arr - rf_rate) / v_arr
@@ -769,7 +796,6 @@ if run_btn:
             # --- TAB 5: STRESS TEST ---
             with t5:
                 st.subheader("Macro Scenario Analysis")
-                st.info("Estimates portfolio impact based on Beta sensitivity to the Equal-Weighted Universe.")
                 
                 # Calculate Beta
                 bench_series = returns.mean(axis=1)
@@ -801,12 +827,8 @@ if run_btn:
             # --- TAB 6: COMPARATIVE VAR ---
             with t6:
                 st.subheader("⚠️ Comparative VaR & CVaR Engine")
-                st.markdown("Quantifies tail risk using three distinct statistical methodologies.")
                 
-                # 1. Methodology Comparison Chart
-                st.markdown("##### 1. Model Risk Comparison")
-                
-                # Reshape data for plotting
+                # 1. Comparison Chart
                 var_plot_data = []
                 for k, v in var_profile.items():
                     if "VaR" in k and "CVaR" not in k:
@@ -826,55 +848,88 @@ if run_btn:
                 st.plotly_chart(fig_bar, use_container_width=True)
                 
                 # 2. Distribution Visualizer
-                st.markdown("##### 2. Return Distribution & Tail Risk (Visual CVaR)")
-                
                 c_dist, c_stat = st.columns([2, 1])
                 
                 with c_dist:
                     fig_d = go.Figure()
-                    # Histogram
                     fig_d.add_trace(go.Histogram(
                         x=port_ret_series, nbinsx=100, histnorm='probability density', 
                         name='Returns', marker_color='#1f77b4', opacity=0.5
                     ))
-                    # Normal Curve
                     x_rng = np.linspace(port_ret_series.min(), port_ret_series.max(), 100)
                     fig_d.add_trace(go.Scatter(
                         x=x_rng, y=stats.norm.pdf(x_rng, port_ret_series.mean(), port_ret_series.std()), 
                         mode='lines', name='Normal Dist', line=dict(color='white', dash='dash')
                     ))
-                    
-                    # Highlight CVaR Region (Tail)
                     cutoff = var_profile['Historical VaR (95%)']
                     x_tail = x_rng[x_rng <= cutoff]
                     y_tail = stats.norm.pdf(x_tail, port_ret_series.mean(), port_ret_series.std())
-                    
                     fig_d.add_trace(go.Scatter(
                         x=x_tail, y=y_tail, fill='tozeroy', 
                         fillcolor='rgba(239, 85, 59, 0.5)', line=dict(width=0), 
                         name='CVaR (Expected Shortfall) Area'
                     ))
-                    
-                    # Vertical Line for Modified VaR
-                    fig_d.add_vline(
-                        x=var_profile['Modified VaR (95%)'], 
-                        line_dash="dot", line_color="yellow", 
-                        annotation_text="Modified VaR 95%"
-                    )
-                    
+                    fig_d.add_vline(x=var_profile['Modified VaR (95%)'], line_dash="dot", line_color="yellow", annotation_text="Mod VaR 95%")
                     fig_d.update_layout(template="plotly_dark", height=450, title="Distribution with CVaR Shading")
                     st.plotly_chart(fig_d, use_container_width=True)
                 
                 with c_stat:
-                    st.markdown("#### Higher Moments")
-                    st.metric("Skewness", f"{skew:.3f}", help="Negative skew = frequent small gains, rare large losses.")
-                    st.metric("Kurtosis", f"{kurt:.3f}", help="High kurtosis = Fat Tails (Extreme event risk).")
-                    
-                    st.markdown("---")
-                    st.markdown("#### Detailed Metrics")
-                    v_df = pd.DataFrame.from_dict(var_profile, orient='index', columns=['Value'])
-                    v_df['Value'] = v_df['Value'].apply(lambda x: f"{x:.2%}")
-                    st.table(v_df)
+                    st.metric("Skewness", f"{skew:.3f}")
+                    st.metric("Kurtosis", f"{kurt:.3f}")
+                    st.table(pd.DataFrame.from_dict(var_profile, orient='index', columns=['Value']).applymap(lambda x: f"{x:.2%}"))
+
+            # --- TAB 7: QUANT LAB (GARCH & PCA) ---
+            with t7:
+                st.markdown("### 🔬 Quant Lab: Advanced Risk Decomposition")
+                
+                # 1. GARCH SECTION
+                st.subheader("1. Econometric Volatility Modeling (GARCH 1,1)")
+                if HAS_ARCH and garch_vol is not None:
+                    fig_g = go.Figure()
+                    fig_g.add_trace(go.Scatter(
+                        x=port_ret_series.index, y=np.abs(port_ret_series), 
+                        mode='markers', name='Abs Returns', marker=dict(color='gray', opacity=0.3, size=3)
+                    ))
+                    fig_g.add_trace(go.Scatter(
+                        x=garch_vol.index, y=garch_vol/100, 
+                        mode='lines', name='Conditional Volatility (GARCH)', line=dict(color='#EF553B', width=2)
+                    ))
+                    fig_g.update_layout(title="Volatility Clustering Analysis", template="plotly_dark", height=400, yaxis_title="Volatility")
+                    st.plotly_chart(fig_g, use_container_width=True)
+                    st.info("The Red Line shows the 'Conditional Volatility' forecast by the GARCH model. Spikes indicate periods where market turbulence is statistically likely to persist.")
+                else:
+                    st.warning("GARCH model could not be fitted (Library missing or convergence error).")
+                
+                st.markdown("---")
+                
+                # 2. PCA & COMPONENT VAR SECTION
+                st.subheader("2. Factor & Component Risk Analysis")
+                c_pca, c_comp = st.columns(2)
+                
+                with c_pca:
+                    st.markdown("**Principal Component Analysis (Market Factors)**")
+                    expl_var_cum = np.cumsum(pca_expl_var)
+                    fig_pca = go.Figure()
+                    fig_pca.add_trace(go.Bar(
+                        x=[f"PC{i+1}" for i in range(len(pca_expl_var))], y=pca_expl_var, name='Individual Variance'
+                    ))
+                    fig_pca.add_trace(go.Scatter(
+                        x=[f"PC{i+1}" for i in range(len(pca_expl_var))], y=expl_var_cum, name='Cumulative Variance', line=dict(color='yellow')
+                    ))
+                    fig_pca.update_layout(title="PCA Scree Plot (Dimensionality of Risk)", template="plotly_dark", height=400)
+                    st.plotly_chart(fig_pca, use_container_width=True)
+
+                with c_comp:
+                    st.markdown("**Component VaR (Risk Contribution by Asset)**")
+                    comp_var_sorted = comp_var.sort_values(ascending=False)
+                    fig_cvar = px.bar(
+                        x=comp_var_sorted.values, y=comp_var_sorted.index, orientation='h',
+                        title="Contribution to Total Portfolio VaR",
+                        labels={'x': 'Risk Contribution amount', 'y': 'Asset'},
+                        color=comp_var_sorted.values, color_continuous_scale='OrRd'
+                    )
+                    fig_cvar.update_layout(template="plotly_dark", height=400)
+                    st.plotly_chart(fig_cvar, use_container_width=True)
 
 else:
     st.info("👈 Please configure the portfolio parameters in the sidebar to launch the engine.")
