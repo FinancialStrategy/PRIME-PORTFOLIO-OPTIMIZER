@@ -10,7 +10,6 @@ import scipy.stats as stats
 from scipy import optimize
 import warnings
 
-# PyPortfolioOpt imports
 # PyPortfolioOpt imports - CORRECTED
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
@@ -71,6 +70,7 @@ US_DEFAULTS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V
 
 class PortfolioDataManager:
     """Professional-grade financial data manager with Streamlit Caching"""
+    
     @staticmethod
     @st.cache_data(ttl=3600)
     def fetch_data(tickers, start_date, end_date):
@@ -138,6 +138,7 @@ class PortfolioDataManager:
         except Exception as e:
             st.error(f"Data Fetch Error: {str(e)}")
             return pd.DataFrame(), {}
+
     @staticmethod
     def calculate_returns(prices, method='log'):
         if method == 'log':
@@ -509,5 +510,3 @@ if run_btn:
 
 else:
     st.info("👈 Select assets and parameters in the sidebar, then click 'RUN ANALYSIS'")
-
-
