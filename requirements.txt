@@ -4,7 +4,9 @@ numpy
 pandas
 plotly
 scipy
-pyportfolioopt
-arch
 scikit-learn
 statsmodels
+matplotlib
+cvxpy
+pyportfolioopt>=1.5.0
+
