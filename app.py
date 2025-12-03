@@ -4,6 +4,7 @@ import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
+import plotly.figure_factory as ff
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as stats
@@ -11,6 +12,7 @@ from scipy import optimize
 import warnings
 from typing import Dict, Tuple, List, Optional
 import numpy.random as npr
+import io
 
 # --- QUANTITATIVE LIBRARY IMPORTS ---
 from pypfopt import expected_returns, risk_models
@@ -93,6 +95,7 @@ st.markdown("""
         border-bottom: 2px solid #00cc96;
     }
     div[data-testid="stTable"] { font-size: 13px; font-family: 'Roboto Mono', monospace; }
+    div[data-testid="stExpander"] { background-color: #161a24; border-radius: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -198,61 +201,110 @@ class AssetClassifier:
         return 'Global'
 
 # ============================================================================
-# 3. PORTFOLIO ATTRIBUTION ENGINE
+# 3. ENHANCED PORTFOLIO ATTRIBUTION ENGINE
 # ============================================================================
 
-class PortfolioAttribution:
-    """Performs Brinson-Fachler attribution analysis."""
+class EnhancedPortfolioAttribution:
+    """
+    Professional Brinson-Fachler attribution analysis with multiple decomposition methods.
+    Includes:
+    1. Brinson-Fachler (Sector-based)
+    2. Arithmetic vs Geometric attribution
+    3. Multi-period attribution
+    """
     
     @staticmethod
-    def calculate_attribution(portfolio_returns, benchmark_returns, 
-                              portfolio_weights, benchmark_weights, 
-                              sector_map):
-        """Calculates Brinson attribution analysis."""
-        # Group by sectors
-        portfolio_sector_returns = {}
-        benchmark_sector_returns = {}
+    def calculate_brinson_fachler_attribution(portfolio_returns, benchmark_returns, 
+                                            portfolio_weights, benchmark_weights, 
+                                            sector_map, period='daily'):
+        """
+        Complete Brinson-Fachler attribution with proper handling.
+        Returns Total excess, Allocation, Selection, Interaction, and Sector breakdowns.
+        """
         
-        for ticker in portfolio_returns.columns:
-            sector = sector_map.get(ticker, 'Other')
-            if sector not in portfolio_sector_returns:
-                portfolio_sector_returns[sector] = []
-                benchmark_sector_returns[sector] = []
+        # Ensure we have the same assets in both portfolio and benchmark
+        all_assets = set(list(portfolio_weights.keys()) + list(benchmark_weights.keys()))
+        
+        # Create aligned weight vectors
+        w_p = np.array([portfolio_weights.get(a, 0) for a in all_assets])
+        w_b = np.array([benchmark_weights.get(a, 0) for a in all_assets])
+        
+        # Get sector for each asset
+        sectors = [sector_map.get(a, 'Other') for a in all_assets]
+        unique_sectors = list(set(sectors))
+        
+        # Calculate sector-level weights and returns
+        sector_data = {}
+        
+        for sector in unique_sectors:
+            # Get indices for assets in this sector
+            sector_indices = [i for i, s in enumerate(sectors) if s == sector]
             
-            portfolio_sector_returns[sector].append(portfolio_returns[ticker].mean())
-            benchmark_sector_returns[sector].append(benchmark_returns[ticker].mean())
+            if not sector_indices:
+                continue
+            
+            # Sector weights
+            w_p_sector = w_p[sector_indices].sum()
+            w_b_sector = w_b[sector_indices].sum()
+            
+            # Sector returns (weighted average)
+            # Portfolio sector return
+            if w_p_sector > 0:
+                r_p_sector = np.sum(w_p[sector_indices] * np.array([portfolio_returns[a].mean() if a in portfolio_returns.columns else 0 
+                                             for a in np.array(list(all_assets))[sector_indices]])) / w_p_sector
+            else:
+                r_p_sector = 0
+            
+            # Benchmark sector return
+            if w_b_sector > 0:
+                r_b_sector = np.sum(w_b[sector_indices] * np.array([benchmark_returns[a].mean() if a in benchmark_returns.columns else 0 
+                                             for a in np.array(list(all_assets))[sector_indices]])) / w_b_sector
+            else:
+                r_b_sector = 0
+            
+            sector_data[sector] = {
+                'w_p': w_p_sector,
+                'w_b': w_b_sector,
+                'r_p': r_p_sector,
+                'r_b': r_b_sector,
+                'assets': [list(all_assets)[i] for i in sector_indices]
+            }
         
-        # Calculate sector averages
-        portfolio_sector_avg = {s: np.mean(v) for s, v in portfolio_sector_returns.items()}
-        benchmark_sector_avg = {s: np.mean(v) for s, v in benchmark_sector_returns.items()}
+        # Overall benchmark return
+        R_b = sum(data['w_b'] * data['r_b'] for data in sector_data.values())
         
-        # Calculate weights at sector level
-        portfolio_sector_weights = {}
-        benchmark_sector_weights = {}
-        
-        for ticker, weight in portfolio_weights.items():
-            sector = sector_map.get(ticker, 'Other')
-            portfolio_sector_weights[sector] = portfolio_sector_weights.get(sector, 0) + weight
-        
-        for ticker, weight in benchmark_weights.items():
-            sector = sector_map.get(ticker, 'Other')
-            benchmark_sector_weights[sector] = benchmark_sector_weights.get(sector, 0) + weight
-        
-        # Calculate attribution
+        # Calculate attribution effects
         allocation_effect = 0
         selection_effect = 0
         interaction_effect = 0
         
-        for sector in set(list(portfolio_sector_weights.keys()) + list(benchmark_sector_weights.keys())):
-            w_p = portfolio_sector_weights.get(sector, 0)
-            w_b = benchmark_sector_weights.get(sector, 0)
-            r_p = portfolio_sector_avg.get(sector, 0)
-            r_b = benchmark_sector_avg.get(sector, 0)
-            R_b = np.mean(list(benchmark_sector_avg.values()))
+        sector_attribution = {}
+        
+        for sector, data in sector_data.items():
+            w_p = data['w_p']
+            w_b = data['w_b']
+            r_p = data['r_p']
+            r_b = data['r_b']
             
-            allocation_effect += (w_p - w_b) * (r_b - R_b)
-            selection_effect += w_b * (r_p - r_b)
-            interaction_effect += (w_p - w_b) * (r_p - r_b)
+            # Brinson-Fachler attribution
+            alloc = (w_p - w_b) * (r_b - R_b)
+            select = w_b * (r_p - r_b)
+            inter = (w_p - w_b) * (r_p - r_b)
+            
+            allocation_effect += alloc
+            selection_effect += select
+            interaction_effect += inter
+            
+            sector_attribution[sector] = {
+                'Allocation': alloc,
+                'Selection': select,
+                'Interaction': inter,
+                'Total Contribution': alloc + select + inter,
+                'Portfolio Weight': w_p,
+                'Benchmark Weight': w_b,
+                'Portfolio Return': r_p,
+                'Benchmark Return': r_b
+            }
         
         total_excess = allocation_effect + selection_effect + interaction_effect
         
@@ -260,11 +312,472 @@ class PortfolioAttribution:
             'Total Excess Return': total_excess,
             'Allocation Effect': allocation_effect,
             'Selection Effect': selection_effect,
-            'Interaction Effect': interaction_effect
+            'Interaction Effect': interaction_effect,
+            'Sector Breakdown': sector_attribution,
+            'Benchmark Return': R_b,
+            'Portfolio Return': sum(data['w_p'] * data['r_p'] for data in sector_data.values())
         }
+    
+    @staticmethod
+    def calculate_arithmetic_vs_geometric(portfolio_returns, benchmark_returns):
+        """
+        Calculate arithmetic vs geometric excess returns.
+        """
+        # Convert to arithmetic returns if needed
+        if isinstance(portfolio_returns, pd.Series):
+            port_cum = (1 + portfolio_returns).prod() - 1
+            bench_cum = (1 + benchmark_returns).prod() - 1
+        else:
+            port_cum = portfolio_returns
+            bench_cum = benchmark_returns
+        
+        # Arithmetic excess
+        arithmetic_excess = port_cum - bench_cum
+        
+        # Geometric excess (compounded)
+        geometric_excess = (1 + port_cum) / (1 + bench_cum) - 1
+        
+        return {
+            'Arithmetic Excess Return': arithmetic_excess,
+            'Geometric Excess Return': geometric_excess,
+            'Compounding Effect': geometric_excess - arithmetic_excess
+        }
+    
+    @staticmethod
+    def calculate_multi_period_attribution(portfolio_returns_series, benchmark_returns_series, 
+                                           portfolio_weights_dict, benchmark_weights_dict, 
+                                           sector_map, frequency='monthly'):
+        """
+        Multi-period attribution analysis (Linking attribution over time).
+        """
+        # Resample based on frequency
+        if frequency == 'monthly':
+            port_resampled = (1 + portfolio_returns_series).resample('M').prod() - 1
+            bench_resampled = (1 + benchmark_returns_series).resample('M').prod() - 1
+        elif frequency == 'quarterly':
+            port_resampled = (1 + portfolio_returns_series).resample('Q').prod() - 1
+            bench_resampled = (1 + benchmark_returns_series).resample('Q').prod() - 1
+        else:  # yearly
+            port_resampled = (1 + portfolio_returns_series).resample('Y').prod() - 1
+            bench_resampled = (1 + benchmark_returns_series).resample('Y').prod() - 1
+        
+        period_attributions = []
+        
+        for period, (port_ret, bench_ret) in enumerate(zip(port_resampled, bench_resampled)):
+            attribution = EnhancedPortfolioAttribution.calculate_brinson_fachler_attribution(
+                pd.DataFrame({'Portfolio': [port_ret]}),
+                pd.DataFrame({'Benchmark': [bench_ret]}),
+                portfolio_weights_dict,
+                benchmark_weights_dict,
+                sector_map
+            )
+            
+            period_attributions.append({
+                'Period': port_resampled.index[period],
+                'Portfolio Return': port_ret,
+                'Benchmark Return': bench_ret,
+                'Excess Return': attribution['Total Excess Return'],
+                'Allocation': attribution['Allocation Effect'],
+                'Selection': attribution['Selection Effect'],
+                'Interaction': attribution['Interaction Effect']
+            })
+        
+        return pd.DataFrame(period_attributions)
 
 # ============================================================================
-# 4. ENHANCED TEARSHEET COMPONENTS
+# 4. ENHANCED ATTRIBUTION VISUALIZATION
+# ============================================================================
+
+class AttributionVisualizer:
+    """Professional visualization components for attribution analysis."""
+    
+    @staticmethod
+    def create_attribution_waterfall(attribution_results):
+        """Enhanced waterfall chart with breakdown by sector."""
+        fig = go.Figure()
+        
+        # Create waterfall for total attribution
+        categories = ['Benchmark Return']
+        values = [attribution_results.get('Benchmark Return', 0)]
+        measures = ['absolute']
+        
+        # Add allocation effect
+        if attribution_results.get('Allocation Effect', 0) != 0:
+            categories.append('Allocation Effect')
+            values.append(attribution_results['Allocation Effect'])
+            measures.append('relative')
+        
+        # Add selection effect
+        if attribution_results.get('Selection Effect', 0) != 0:
+            categories.append('Selection Effect')
+            values.append(attribution_results['Selection Effect'])
+            measures.append('relative')
+        
+        # Add interaction effect
+        if attribution_results.get('Interaction Effect', 0) != 0:
+            categories.append('Interaction Effect')
+            values.append(attribution_results['Interaction Effect'])
+            measures.append('relative')
+        
+        # Add total portfolio return
+        categories.append('Portfolio Return')
+        values.append(attribution_results.get('Portfolio Return', 0))
+        measures.append('total')
+        
+        fig.add_trace(go.Waterfall(
+            name="Attribution",
+            orientation="v",
+            measure=measures,
+            x=categories,
+            y=values,
+            text=[f"{v:.2%}" for v in values],
+            textposition="outside",
+            textfont=dict(size=12),
+            connector=dict(line=dict(color="rgba(255,255,255,0.5)", width=2)),
+            increasing=dict(marker=dict(
+                color="#00cc96",
+                line=dict(color="#00cc96", width=2)
+            )),
+            decreasing=dict(marker=dict(
+                color="#ef553b",
+                line=dict(color="#ef553b", width=2)
+            )),
+            totals=dict(marker=dict(
+                color="#636efa",
+                line=dict(color="#636efa", width=3)
+            ))
+        ))
+        
+        fig.update_layout(
+            title={
+                'text': "Performance Attribution Breakdown",
+                'y':0.95,
+                'x':0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(size=20)
+            },
+            template="plotly_dark",
+            height=500,
+            showlegend=False,
+            yaxis_tickformat=".2%",
+            yaxis_title="Return Contribution",
+            xaxis_title="Attribution Component",
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            margin=dict(t=80, l=60, r=60, b=60)
+        )
+        
+        # Add annotations for key insights
+        total_excess = attribution_results.get('Total Excess Return', 0)
+        if total_excess > 0:
+            fig.add_annotation(
+                x=len(categories)-1,
+                y=values[-1],
+                text=f"▲ {total_excess:.2%} Excess Return",
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=1,
+                arrowwidth=2,
+                arrowcolor="#00cc96",
+                font=dict(size=12, color="#00cc96"),
+                ax=0,
+                ay=-40
+            )
+        
+        return fig
+    
+    @staticmethod
+    def create_sector_attribution_heatmap(sector_attribution):
+        """Heatmap showing attribution by sector."""
+        sectors = list(sector_attribution.keys())
+        
+        # Prepare data for heatmap
+        allocation_data = [sector_attribution[s]['Allocation'] for s in sectors]
+        selection_data = [sector_attribution[s]['Selection'] for s in sectors]
+        interaction_data = [sector_attribution[s]['Interaction'] for s in sectors]
+        total_data = [sector_attribution[s]['Total Contribution'] for s in sectors]
+        
+        # Create subplots
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=("Allocation Effect", "Selection Effect", 
+                          "Interaction Effect", "Total Contribution"),
+            vertical_spacing=0.15,
+            horizontal_spacing=0.1
+        )
+        
+        # Allocation heatmap
+        fig.add_trace(
+            go.Heatmap(
+                z=[allocation_data],
+                x=sectors,
+                y=['Allocation'],
+                colorscale='RdBu',
+                zmid=0,
+                colorbar=dict(title="%", x=0.45),
+                text=[[f"{v:.2%}" for v in allocation_data]],
+                texttemplate="%{text}",
+                textfont={"size": 10},
+                hovertemplate="Sector: %{x}<br>Allocation Effect: %{z:.2%}<extra></extra>"
+            ),
+            row=1, col=1
+        )
+        
+        # Selection heatmap
+        fig.add_trace(
+            go.Heatmap(
+                z=[selection_data],
+                x=sectors,
+                y=['Selection'],
+                colorscale='RdBu',
+                zmid=0,
+                showscale=False,
+                text=[[f"{v:.2%}" for v in selection_data]],
+                texttemplate="%{text}",
+                textfont={"size": 10},
+                hovertemplate="Sector: %{x}<br>Selection Effect: %{z:.2%}<extra></extra>"
+            ),
+            row=1, col=2
+        )
+        
+        # Interaction heatmap
+        fig.add_trace(
+            go.Heatmap(
+                z=[interaction_data],
+                x=sectors,
+                y=['Interaction'],
+                colorscale='RdBu',
+                zmid=0,
+                showscale=False,
+                text=[[f"{v:.2%}" for v in interaction_data]],
+                texttemplate="%{text}",
+                textfont={"size": 10},
+                hovertemplate="Sector: %{x}<br>Interaction Effect: %{z:.2%}<extra></extra>"
+            ),
+            row=2, col=1
+        )
+        
+        # Total contribution heatmap
+        fig.add_trace(
+            go.Heatmap(
+                z=[total_data],
+                x=sectors,
+                y=['Total'],
+                colorscale='RdYlGn',
+                zmid=0,
+                colorbar=dict(title="%", x=1.02),
+                text=[[f"{v:.2%}" for v in total_data]],
+                texttemplate="%{text}",
+                textfont={"size": 10},
+                hovertemplate="Sector: %{x}<br>Total Contribution: %{z:.2%}<extra></extra>"
+            ),
+            row=2, col=2
+        )
+        
+        fig.update_layout(
+            title={
+                'text': "Sector-Level Attribution Analysis",
+                'y':0.98,
+                'x':0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(size=20)
+            },
+            template="plotly_dark",
+            height=600,
+            showlegend=False,
+            xaxis_tickangle=45,
+            margin=dict(t=100, l=60, r=60, b=100)
+        )
+        
+        return fig
+    
+    @staticmethod
+    def create_attribution_radar_chart(sector_attribution):
+        """Radar chart showing sector contributions."""
+        sectors = list(sector_attribution.keys())
+        
+        # Prepare data for radar
+        allocation_values = [sector_attribution[s]['Allocation'] for s in sectors]
+        selection_values = [sector_attribution[s]['Selection'] for s in sectors]
+        
+        # Complete the circle
+        sectors_complete = sectors + [sectors[0]]
+        allocation_complete = allocation_values + [allocation_values[0]]
+        selection_complete = selection_values + [selection_values[0]]
+        
+        fig = go.Figure()
+        
+        # Allocation effect
+        fig.add_trace(go.Scatterpolar(
+            r=allocation_complete,
+            theta=sectors_complete,
+            fill='toself',
+            name='Allocation Effect',
+            line=dict(color='#636efa', width=2),
+            fillcolor='rgba(99, 110, 250, 0.3)'
+        ))
+        
+        # Selection effect
+        fig.add_trace(go.Scatterpolar(
+            r=selection_complete,
+            theta=sectors_complete,
+            fill='toself',
+            name='Selection Effect',
+            line=dict(color='#ef553b', width=2),
+            fillcolor='rgba(239, 85, 59, 0.3)'
+        ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    tickformat=".2%",
+                    gridcolor='rgba(255,255,255,0.2)',
+                    linecolor='rgba(255,255,255,0.5)'
+                ),
+                angularaxis=dict(
+                    gridcolor='rgba(255,255,255,0.2)',
+                    linecolor='rgba(255,255,255,0.5)'
+                ),
+                bgcolor='rgba(0,0,0,0)'
+            ),
+            title={
+                'text': "Sector Allocation vs Selection Effects",
+                'y':0.95,
+                'x':0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(size=18)
+            },
+            template="plotly_dark",
+            height=500,
+            showlegend=True,
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01
+            ),
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)'
+        )
+        
+        return fig
+    
+    @staticmethod
+    def create_time_series_attribution(multi_period_df):
+        """Time series visualization of attribution components."""
+        fig = go.Figure()
+        
+        # Cumulative attribution
+        fig.add_trace(go.Scatter(
+            x=multi_period_df['Period'],
+            y=multi_period_df['Excess Return'].cumsum(),
+            mode='lines',
+            name='Cumulative Excess Return',
+            line=dict(color='#00cc96', width=3),
+            fill='tozeroy',
+            fillcolor='rgba(0, 204, 150, 0.2)'
+        ))
+        
+        # Allocation effect (stacked)
+        fig.add_trace(go.Scatter(
+            x=multi_period_df['Period'],
+            y=multi_period_df['Allocation'].cumsum(),
+            mode='lines',
+            name='Cumulative Allocation',
+            line=dict(color='#636efa', width=2, dash='dot'),
+            stackgroup='one'
+        ))
+        
+        # Selection effect (stacked)
+        fig.add_trace(go.Scatter(
+            x=multi_period_df['Period'],
+            y=multi_period_df['Selection'].cumsum(),
+            mode='lines',
+            name='Cumulative Selection',
+            line=dict(color='#ef553b', width=2, dash='dash'),
+            stackgroup='one'
+        ))
+        
+        fig.update_layout(
+            title={
+                'text': "Multi-Period Attribution Analysis",
+                'y':0.95,
+                'x':0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': dict(size=20)
+            },
+            template="plotly_dark",
+            height=500,
+            showlegend=True,
+            yaxis_tickformat=".2%",
+            yaxis_title="Cumulative Return Contribution",
+            xaxis_title="Period",
+            hovermode='x unified',
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        return fig
+    
+    @staticmethod
+    def create_attribution_summary_table(attribution_results, sector_attribution):
+        """Professional summary table for attribution analysis."""
+        # Create summary metrics
+        summary_data = {
+            'Metric': [
+                'Total Excess Return',
+                'Allocation Effect',
+                'Selection Effect',
+                'Interaction Effect',
+                'Benchmark Return',
+                'Portfolio Return'
+            ],
+            'Value': [
+                f"{attribution_results.get('Total Excess Return', 0):.2%}",
+                f"{attribution_results.get('Allocation Effect', 0):.2%}",
+                f"{attribution_results.get('Selection Effect', 0):.2%}",
+                f"{attribution_results.get('Interaction Effect', 0):.2%}",
+                f"{attribution_results.get('Benchmark Return', 0):.2%}",
+                f"{attribution_results.get('Portfolio Return', 0):.2%}"
+            ],
+            'Interpretation': [
+                "Value added vs benchmark",
+                "Sector allocation skill",
+                "Stock selection skill",
+                "Interaction of allocation & selection",
+                "Market Performance",
+                "Strategy Performance"
+            ]
+        }
+        
+        # Create sector breakdown table
+        sector_data = []
+        for sector, data in sector_attribution.items():
+            sector_data.append({
+                'Sector': sector,
+                'Allocation': f"{data['Allocation']:.2%}",
+                'Selection': f"{data['Selection']:.2%}",
+                'Interaction': f"{data['Interaction']:.2%}",
+                'Total': f"{data['Total Contribution']:.2%}",
+                'Portfolio Weight': f"{data['Portfolio Weight']:.2%}",
+                'Benchmark Weight': f"{data['Benchmark Weight']:.2%}",
+                'Active Weight': f"{(data['Portfolio Weight'] - data['Benchmark Weight']):.2%}"
+            })
+        
+        return pd.DataFrame(summary_data), pd.DataFrame(sector_data)
+
+# ============================================================================
+# 5. ENHANCED TEARSHEET COMPONENTS (Updated with new Attribution)
 # ============================================================================
 
 class EnhancedTearsheet:
@@ -272,24 +785,22 @@ class EnhancedTearsheet:
     
     @staticmethod
     def create_kpi_grid(risk_metrics, perf_metrics, attribution=None):
-        """Creates enhanced KPI grid with 8 metrics in 4x2 layout."""
+        """Creates enhanced KPI grid with updated attribution metrics."""
         metrics_config = [
             {"label": "CAGR", "value": risk_metrics['CAGR'], "format": ".2%", "color": "#00cc96"},
             {"label": "Volatility", "value": risk_metrics['Volatility'], "format": ".2%", "color": "white"},
             {"label": "Sharpe Ratio", "value": risk_metrics['Sharpe Ratio'], "format": ".2f", 
              "color": "#00cc96" if risk_metrics['Sharpe Ratio'] > 1 else "white"},
             {"label": "Sortino Ratio", "value": risk_metrics['Sortino Ratio'], "format": ".2f", "color": "white"},
+            {"label": "Excess Return", "value": attribution['Total Excess Return'] if attribution else 0, "format": ".2%", 
+             "color": "#00cc96" if attribution and attribution['Total Excess Return'] > 0 else "#ef553b"},
+            {"label": "Info Ratio", "value": perf_metrics['information_ratio'], "format": ".2f", 
+             "color": "#00cc96" if perf_metrics['information_ratio'] > 0.5 else "white"},
             {"label": "Max Drawdown", "value": risk_metrics['Max Drawdown'], "format": ".2%", "color": "#ef553b"},
             {"label": "Calmar Ratio", "value": risk_metrics['Calmar Ratio'], "format": ".2f", "color": "white"},
-            {"label": "VaR 95%", "value": risk_metrics['VaR 95%'], "format": ".2%", "color": "#ff9900"},
-            {"label": "Beta", "value": perf_metrics.get('beta', 1.0), "format": ".2f", "color": "white"},
+            {"label": "Active Share", "value": perf_metrics['active_share'], "format": ".1%", "color": "#636efa"},
+            {"label": "Tracking Error", "value": perf_metrics['tracking_error'], "format": ".2%", "color": "white"},
         ]
-        
-        if attribution:
-            metrics_config.extend([
-                {"label": "Excess Return", "value": attribution['Total Excess Return'], "format": ".2%", "color": "#00cc96"},
-                {"label": "Allocation Effect", "value": attribution['Allocation Effect'], "format": ".2%", "color": "#636efa"},
-            ])
         
         # Create columns
         cols = st.columns(5)
@@ -458,6 +969,7 @@ class EnhancedTearsheet:
                 current_weights = weights.copy()
             
             # Calculate current values based on price movements
+            # (Simplified simulation of drift)
             allocations.loc[date] = current_weights
         
         # Create stacked area chart
@@ -487,36 +999,6 @@ class EnhancedTearsheet:
                 xanchor="right",
                 x=1
             )
-        )
-        
-        return fig
-    
-    @staticmethod
-    def create_performance_attribution_chart(attribution_results):
-        """Creates waterfall chart for performance attribution."""
-        categories = list(attribution_results.keys())
-        values = list(attribution_results.values())
-        
-        fig = go.Figure(go.Waterfall(
-            name="Attribution",
-            orientation="v",
-            measure=["relative"] * (len(categories) - 1) + ["total"],
-            x=categories,
-            y=values,
-            text=[f"{v:.2%}" for v in values],
-            textposition="outside",
-            connector=dict(line=dict(color="rgba(255,255,255,0.3)")),
-            increasing=dict(marker=dict(color="#00cc96")),
-            decreasing=dict(marker=dict(color="#ef553b")),
-            totals=dict(marker=dict(color="#636efa"))
-        ))
-        
-        fig.update_layout(
-            title="Performance Attribution Breakdown",
-            template="plotly_dark",
-            height=400,
-            showlegend=False,
-            yaxis_tickformat=".2%"
         )
         
         return fig
@@ -587,7 +1069,7 @@ class EnhancedTearsheet:
         return fig
 
 # ============================================================================
-# 5. ADVANCED MONTE CARLO SIMULATOR
+# 6. ADVANCED MONTE CARLO SIMULATOR
 # ============================================================================
 
 class AdvancedMonteCarloSimulator:
@@ -705,7 +1187,7 @@ class AdvancedMonteCarloSimulator:
         }
     
     def filtered_historical_simulation(self, weights: np.ndarray, days: int = 252, 
-                                       n_sims: int = 10000, block_size: int = 5) -> Tuple[np.ndarray, Dict]:
+                                     n_sims: int = 10000, block_size: int = 5) -> Tuple[np.ndarray, Dict]:
         """Filtered Historical Simulation - non-parametric approach using historical residuals."""
         # Calculate portfolio returns
         port_returns = self.returns.dot(weights)
@@ -774,7 +1256,7 @@ class AdvancedMonteCarloSimulator:
         return results
 
 # ============================================================================
-# 6. DATA PIPELINE
+# 7. DATA PIPELINE
 # ============================================================================
 
 class PortfolioDataManager:
@@ -783,20 +1265,22 @@ class PortfolioDataManager:
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False)
     def fetch_data(tickers, start_date, end_date):
-        """Fetches OHLCV data for a list of tickers."""
+        """Fetches OHLCV data for a list of tickers with robust MultiIndex handling."""
         if not tickers:
             return pd.DataFrame(), {}
             
         try:
             if isinstance(tickers, str): tickers = [tickers]
             
+            # Use threads=False for stability, auto_adjust=True for accurate returns
             data = yf.download(
                 tickers, 
                 start=start_date, 
                 end=end_date, 
                 progress=False, 
                 group_by='ticker', 
-                threads=False
+                threads=False,
+                auto_adjust=True
             )
             
             prices = pd.DataFrame()
@@ -805,24 +1289,27 @@ class PortfolioDataManager:
             if len(tickers) == 1:
                 ticker = tickers[0]
                 df = data
+                # Handle single level or multi-level
                 if isinstance(data.columns, pd.MultiIndex):
                     try: 
                         df = data.xs(ticker, axis=1, level=0, drop_level=True)
                     except: 
                         pass
                 
-                price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+                # Close is already adjusted due to auto_adjust=True
+                price_col = 'Close' 
                 if price_col in df.columns:
                     prices[ticker] = df[price_col]
                     ohlc_dict[ticker] = df
             else:
                 if not isinstance(data.columns, pd.MultiIndex):
+                    # Sometimes single ticker response logic applies if only one valid ticker found
                     return pd.DataFrame(), {}
                 
                 for ticker in tickers:
                     try:
                         df = data.xs(ticker, axis=1, level=0, drop_level=True)
-                        price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+                        price_col = 'Close'
                         if price_col in df.columns:
                             prices[ticker] = df[price_col]
                             ohlc_dict[ticker] = df
@@ -859,7 +1346,7 @@ class PortfolioDataManager:
         return pd.Series(mcaps)
 
 # ============================================================================
-# 7. RISK ENGINE
+# 8. RISK ENGINE
 # ============================================================================
 
 class AdvancedRiskMetrics:
@@ -990,7 +1477,7 @@ class AdvancedRiskMetrics:
         return pd.Series(component_var, index=assets), explained_variance, pca
 
 # ============================================================================
-# 8. PORTFOLIO OPTIMIZER
+# 9. PORTFOLIO OPTIMIZER
 # ============================================================================
 
 class AdvancedPortfolioOptimizer:
@@ -1041,7 +1528,7 @@ class AdvancedPortfolioOptimizer:
         return ef.clean_weights(), ef.portfolio_performance(verbose=False)
 
 # ============================================================================
-# 9. BACKTESTER
+# 10. BACKTESTER
 # ============================================================================
 
 class PortfolioBacktester:
@@ -1095,7 +1582,7 @@ class PortfolioBacktester:
         return pd.Series(portfolio_history, index=date_history)
 
 # ============================================================================
-# 10. MAIN APPLICATION
+# 11. MAIN APPLICATION
 # ============================================================================
 
 # --- SIDEBAR CONFIGURATION ---
@@ -1119,58 +1606,58 @@ if custom_tickers:
 selected_tickers = st.sidebar.multiselect("Portfolio Assets", available_tickers, default=available_tickers[:5])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("⚙️ Model Parameters")
-start_date = st.sidebar.date_input("Start Date", datetime.now() - timedelta(days=365*3))
-end_date = st.sidebar.date_input("End Date", datetime.now())
-rf_rate = st.sidebar.number_input("Risk-Free Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
 
-# Strategy Selection
-strat_options = [
-    'Max Sharpe', 
-    'Min Volatility', 
-    'Efficient Risk', 
-    'Efficient Return', 
-    'Max Quadratic Utility', 
-    'Critical Line Algorithm (CLA)', 
-    'Hierarchical Risk Parity (HRP)', 
-    'Black-Litterman', 
-    'Equal Weight'
-]
-method = st.sidebar.selectbox("Optimization Objective", strat_options)
+# Use Expanders for cleaner UI
+with st.sidebar.expander("⚙️ Model Parameters", expanded=True):
+    start_date = st.date_input("Start Date", datetime.now() - timedelta(days=365*3))
+    end_date = st.date_input("End Date", datetime.now())
+    rf_rate = st.number_input("Risk-Free Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
+
+    # Strategy Selection
+    strat_options = [
+        'Max Sharpe', 
+        'Min Volatility', 
+        'Efficient Risk', 
+        'Efficient Return', 
+        'Max Quadratic Utility', 
+        'Critical Line Algorithm (CLA)', 
+        'Hierarchical Risk Parity (HRP)', 
+        'Black-Litterman', 
+        'Equal Weight'
+    ]
+    method = st.selectbox("Optimization Objective", strat_options)
+
+    # Conditional Strategy Inputs
+    target_vol, target_ret, risk_aversion = 0.1, 0.2, 1.0
+    if method == 'Efficient Risk':
+        target_vol = st.slider("Target Volatility", 0.05, 0.50, 0.15)
+    elif method == 'Efficient Return':
+        target_ret = st.slider("Target Return", 0.05, 0.50, 0.20)
+    elif method == 'Max Quadratic Utility':
+        risk_aversion = st.slider("Risk Aversion (Delta)", 0.1, 10.0, 1.0)
 
 # Monte Carlo Simulation Parameters
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎲 Monte Carlo Settings")
-mc_days = st.sidebar.slider("Simulation Horizon (Days)", 21, 504, 252, 21)
-mc_sims = st.sidebar.selectbox("Number of Simulations", [1000, 5000, 10000, 25000], index=2)
-mc_method = st.sidebar.selectbox("Simulation Method", 
-                                 ["GBM", "Student's t", "Jump Diffusion", "Filtered Historical"])
+with st.sidebar.expander("🎲 Monte Carlo Settings"):
+    mc_days = st.slider("Simulation Horizon (Days)", 21, 504, 252, 21)
+    mc_sims = st.selectbox("Number of Simulations", [1000, 5000, 10000, 25000], index=2)
+    mc_method = st.selectbox("Simulation Method", 
+                                     ["GBM", "Student's t", "Jump Diffusion", "Filtered Historical"])
 
-# Jump Diffusion Parameters
-if mc_method == "Jump Diffusion":
-    st.sidebar.markdown("**Jump Diffusion Parameters**")
-    jump_intensity = st.sidebar.slider("Jump Intensity (λ)", 0.01, 0.20, 0.05, 0.01)
-    jump_mean = st.sidebar.slider("Jump Mean", -0.20, 0.00, -0.10, 0.01)
-    jump_std = st.sidebar.slider("Jump Std Dev", 0.05, 0.30, 0.15, 0.01)
+    # Jump Diffusion Parameters
+    if mc_method == "Jump Diffusion":
+        st.markdown("**Jump Diffusion Parameters**")
+        jump_intensity = st.slider("Jump Intensity (λ)", 0.01, 0.20, 0.05, 0.01)
+        jump_mean = st.slider("Jump Mean", -0.20, 0.00, -0.10, 0.01)
+        jump_std = st.slider("Jump Std Dev", 0.05, 0.30, 0.15, 0.01)
 
-# Student's t Parameters
-if mc_method == "Student's t":
-    df_t = st.sidebar.slider("Degrees of Freedom", 3.0, 15.0, 5.0, 0.5)
+    # Student's t Parameters
+    if mc_method == "Student's t":
+        df_t = st.slider("Degrees of Freedom", 3.0, 15.0, 5.0, 0.5)
 
 # Backtest Settings
-st.sidebar.markdown("---")
-st.sidebar.subheader("📉 Backtest Settings")
-rebal_freq_ui = st.sidebar.selectbox("Rebalancing Frequency", ["Quarterly", "Monthly", "Yearly"])
-freq_map = {"Quarterly": "Q", "Monthly": "M", "Yearly": "Y"}
-
-# Conditional Strategy Inputs
-target_vol, target_ret, risk_aversion = 0.1, 0.2, 1.0
-if method == 'Efficient Risk':
-    target_vol = st.sidebar.slider("Target Volatility", 0.05, 0.50, 0.15)
-elif method == 'Efficient Return':
-    target_ret = st.sidebar.slider("Target Return", 0.05, 0.50, 0.20)
-elif method == 'Max Quadratic Utility':
-    risk_aversion = st.sidebar.slider("Risk Aversion (Delta)", 0.1, 10.0, 1.0)
+with st.sidebar.expander("📉 Backtest Settings"):
+    rebal_freq_ui = st.selectbox("Rebalancing Frequency", ["Quarterly", "Monthly", "Yearly"])
+    freq_map = {"Quarterly": "Q", "Monthly": "M", "Yearly": "Y"}
 
 run_btn = st.sidebar.button("🚀 EXECUTE STRATEGY", type="primary")
 
@@ -1249,24 +1736,55 @@ if run_btn:
             # Combine historical and MC VaR results
             all_var_results = {**var_profile, **mc_var_results}
             
-            # 8. Performance Attribution
+            # 8. ENHANCED PERFORMANCE ATTRIBUTION ENGINE
             eq_weights = {t: 1/len(selected_tickers) for t in selected_tickers}
             sector_map = {t: meta['sector'] for t, meta in asset_metadata.items()}
-            attribution = PortfolioAttribution.calculate_attribution(
+            
+            # Calculate enhanced attribution
+            attribution_engine = EnhancedPortfolioAttribution()
+            attribution_results = attribution_engine.calculate_brinson_fachler_attribution(
                 returns, returns, weights, eq_weights, sector_map
             )
             
-            # Calculate Beta
+            # Calculate arithmetic vs geometric attribution
             port_returns_series = returns.dot(list(weights.values()))
             bench_returns_series = returns.dot(list(eq_weights.values()))
+            arithmetic_vs_geometric = attribution_engine.calculate_arithmetic_vs_geometric(
+                port_returns_series, bench_returns_series
+            )
+            
+            # Calculate multi-period attribution
+            multi_period_df = attribution_engine.calculate_multi_period_attribution(
+                port_returns_series, bench_returns_series, 
+                weights, eq_weights, sector_map, frequency='monthly'
+            )
+            
+            # Calculate Beta and other metrics
             covariance = np.cov(port_returns_series, bench_returns_series)[0][1]
             variance = np.var(bench_returns_series)
             beta = covariance / variance
             
+            # Calculate tracking error
+            tracking_error = np.std(port_returns_series - bench_returns_series) * np.sqrt(252)
+            
+            # Calculate information ratio
+            excess_returns = port_returns_series - bench_returns_series
+            information_ratio = excess_returns.mean() * np.sqrt(252) / tracking_error if tracking_error > 0 else 0
+            
             perf_metrics = {
                 'beta': beta,
-                'tracking_error': np.std(port_returns_series - bench_returns_series) * np.sqrt(252),
+                'tracking_error': tracking_error,
+                'information_ratio': information_ratio,
                 'active_share': 0.5 * np.sum(np.abs(np.array(list(weights.values())) - np.array(list(eq_weights.values()))))
+            }
+            
+            # Combine all attribution metrics
+            full_attribution_metrics = {
+                **attribution_results,
+                **arithmetic_vs_geometric,
+                'Information Ratio': information_ratio,
+                'Tracking Error': tracking_error,
+                'Active Share': perf_metrics['active_share']
             }
             
             # 9. GARCH & PCA Analysis
@@ -1274,15 +1792,17 @@ if run_btn:
             comp_var, pca_expl_var, pca_obj = AdvancedRiskMetrics.calculate_component_var(returns, weights)
             
             # 10. Visualization Layout
-            t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
-                "🏛️ Enhanced Tearsheet", 
-                "📈 Efficient Frontier", 
-                "📉 Dynamic Backtest", 
-                "🕯️ OHLC Analysis", 
+            t1, t2, t3, t4, t5, t6, t7, t8, t9, t10 = st.tabs([
+                "🏛️ Tearsheet", 
+                "📈 Frontier", 
+                "📉 Backtest", 
+                "🔗 Correlations",
+                "📅 Seasonality",
+                "🕯️ OHLC", 
                 "🌪️ Stress Test", 
-                "⚠️ Comparative VaR",
-                "🎲 Advanced MC Simulations",
-                "🔬 Quant Lab (GARCH/PCA)"
+                "⚠️ VaR Engine",
+                "🎲 MC Sims",
+                "🔬 Quant Lab"
             ])
             
             # --- TAB 1: ENHANCED TEARSHEET ---
@@ -1292,62 +1812,183 @@ if run_btn:
                 
                 # Enhanced KPI Dashboard
                 st.markdown("#### 📊 Key Performance Indicators")
-                EnhancedTearsheet.create_kpi_grid(risk_metrics, perf_metrics, attribution)
+                EnhancedTearsheet.create_kpi_grid(risk_metrics, perf_metrics, attribution_results)
                 
+                # --- PERFORMANCE ATTRIBUTION DASHBOARD ---
                 st.markdown("---")
+                st.markdown("#### 📈 Advanced Performance Attribution")
                 
-                # Allocation & Attribution Visualization
+                # Attribution Summary Metrics
+                col_attr1, col_attr2, col_attr3, col_attr4 = st.columns(4)
+                
+                with col_attr1:
+                    excess_color = "#00cc96" if full_attribution_metrics['Total Excess Return'] > 0 else "#ef553b"
+                    st.metric("Total Excess Return", 
+                             f"{full_attribution_metrics['Total Excess Return']:.2%}",
+                             delta_color="off")
+                    st.markdown(f"<div style='color:{excess_color}; font-size:12px;'>vs Equal Weight Benchmark</div>", 
+                               unsafe_allow_html=True)
+                
+                with col_attr2:
+                    st.metric("Information Ratio", 
+                             f"{full_attribution_metrics['Information Ratio']:.2f}",
+                             delta_color="off")
+                    st.markdown("<div style='color:#888; font-size:12px;'>Risk-Adjusted Alpha</div>", 
+                               unsafe_allow_html=True)
+                
+                with col_attr3:
+                    st.metric("Allocation Effect", 
+                             f"{full_attribution_metrics['Allocation Effect']:.2%}",
+                             delta_color="off")
+                    st.markdown("<div style='color:#888; font-size:12px;'>Sector Selection</div>", 
+                               unsafe_allow_html=True)
+                
+                with col_attr4:
+                    st.metric("Selection Effect", 
+                             f"{full_attribution_metrics['Selection Effect']:.2%}",
+                             delta_color="off")
+                    st.markdown("<div style='color:#888; font-size:12px;'>Stock Picking</div>", 
+                               unsafe_allow_html=True)
+                
+                # Main Attribution Visualizations
+                vis = AttributionVisualizer()
+                
+                # Row 1: Waterfall and Heatmap
+                col_wf, col_hm = st.columns(2)
+                
+                with col_wf:
+                    fig_waterfall = vis.create_attribution_waterfall(full_attribution_metrics)
+                    st.plotly_chart(fig_waterfall, use_container_width=True)
+                
+                with col_hm:
+                    fig_heatmap = vis.create_sector_attribution_heatmap(
+                        attribution_results['Sector Breakdown']
+                    )
+                    st.plotly_chart(fig_heatmap, use_container_width=True)
+                
+                # Row 2: Radar and Time Series
+                col_radar, col_ts = st.columns(2)
+                
+                with col_radar:
+                    fig_radar = vis.create_attribution_radar_chart(
+                        attribution_results['Sector Breakdown']
+                    )
+                    st.plotly_chart(fig_radar, use_container_width=True)
+                
+                with col_ts:
+                    fig_timeseries = vis.create_time_series_attribution(multi_period_df)
+                    st.plotly_chart(fig_timeseries, use_container_width=True)
+                
+                # Attribution Summary Tables
+                st.markdown("#### 📊 Attribution Summary Tables")
+                
+                summary_table, sector_table = vis.create_attribution_summary_table(
+                    full_attribution_metrics, 
+                    attribution_results['Sector Breakdown']
+                )
+                
+                col_summary, col_sector = st.columns(2)
+                
+                with col_summary:
+                    st.markdown("**Key Attribution Metrics**")
+                    st.dataframe(
+                        summary_table,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Metric": st.column_config.TextColumn("Metric", width="medium"),
+                            "Value": st.column_config.TextColumn("Value", width="small"),
+                            "Interpretation": st.column_config.TextColumn("Interpretation", width="large")
+                        }
+                    )
+                
+                with col_sector:
+                    st.markdown("**Sector-Level Breakdown**")
+                    st.dataframe(
+                        sector_table,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Sector": st.column_config.TextColumn("Sector", width="medium"),
+                            "Allocation": st.column_config.NumberColumn("Alloc", format="%f"),
+                            "Selection": st.column_config.NumberColumn("Select", format="%f"),
+                            "Total": st.column_config.NumberColumn("Total", format="%f"),
+                            "Active Weight": st.column_config.NumberColumn("Active Wt", format="%f")
+                        }
+                    )
+                
+                # Attribution Insights & Commentary
+                st.markdown("#### 💡 Attribution Insights")
+                
+                insights_col1, insights_col2 = st.columns(2)
+                
+                with insights_col1:
+                    # Calculate attribution quality metrics
+                    allocation_ratio = abs(full_attribution_metrics['Allocation Effect'] / 
+                                          full_attribution_metrics['Total Excess Return']) if full_attribution_metrics['Total Excess Return'] != 0 else 0
+                    
+                    if allocation_ratio > 0.6:
+                        allocation_insight = "🏆 **Strong allocation skills** - Portfolio performance primarily driven by sector selection"
+                    elif allocation_ratio > 0.3:
+                        allocation_insight = "📊 **Balanced attribution** - Both allocation and selection contributed meaningfully"
+                    else:
+                        allocation_insight = "🎯 **Strong selection skills** - Performance primarily driven by stock picking"
+                    
+                    st.markdown(f"""
+                    <div style='background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-left: 4px solid #00cc96;'>
+                        <h4 style='color: #00cc96; margin-top: 0;'>Allocation vs Selection Analysis</h4>
+                        <p style='color: #ccc;'>{allocation_insight}</p>
+                        <ul style='color: #ccc;'>
+                            <li><strong>Allocation Contribution:</strong> {(allocation_ratio*100):.1f}% of excess return</li>
+                            <li><strong>Selection Contribution:</strong> {((1-allocation_ratio)*100):.1f}% of excess return</li>
+                            <li><strong>Interaction Effect:</strong> Typically indicates successful integration of views</li>
+                        </ul>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with insights_col2:
+                    # Identify top contributing sectors
+                    sector_breakdown = attribution_results['Sector Breakdown']
+                    top_sectors = sorted(
+                        [(s, data['Total Contribution']) for s, data in sector_breakdown.items()],
+                        key=lambda x: abs(x[1]),
+                        reverse=True
+                    )[:3]
+                    
+                    top_sectors_text = "<br>".join([f"• {sector}: {contribution:.2%}" 
+                                                   for sector, contribution in top_sectors])
+                    
+                    st.markdown(f"""
+                    <div style='background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-left: 4px solid #636efa;'>
+                        <h4 style='color: #636efa; margin-top: 0;'>Top Contributing Sectors</h4>
+                        <p style='color: #ccc;'>Sectors driving the majority of performance:</p>
+                        <p style='color: #ccc;'>{top_sectors_text}</p>
+                        <p style='color: #ccc; font-size: 12px;'>
+                            <strong>Active Management Score:</strong> {(perf_metrics['active_share']*100):.1f}%
+                            (Higher = More active decisions)
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # --- ORIGINAL PLOTS (Sunburst/Scatter) ---
+                st.markdown("---")
                 col1, col2 = st.columns(2)
-                
                 with col1:
-                    # Sector Allocation Sunburst
                     fig_sunburst = EnhancedTearsheet.create_sector_allocation_chart(weights, asset_metadata)
                     st.plotly_chart(fig_sunburst, use_container_width=True)
-                    
-                    # Style Exposures Radar
                     st.markdown("#### 🎯 Style Exposures")
                     fig_radar = EnhancedTearsheet.create_style_exposure_chart(weights, asset_metadata)
                     st.plotly_chart(fig_radar, use_container_width=True)
-                
                 with col2:
-                    # Risk-Return Scatter
                     fig_scatter = EnhancedTearsheet.create_risk_return_scatter(returns, weights, asset_metadata)
                     st.plotly_chart(fig_scatter, use_container_width=True)
-                    
-                    # Performance Attribution Waterfall
-                    st.markdown("#### 📈 Performance Attribution")
-                    fig_waterfall = EnhancedTearsheet.create_performance_attribution_chart(attribution)
-                    st.plotly_chart(fig_waterfall, use_container_width=True)
                 
                 st.markdown("---")
-                
-                # Allocation Evolution
                 st.markdown("#### 📅 Allocation Timeline")
                 fig_timeline = EnhancedTearsheet.create_allocation_timeline(
                     prices, weights, freq_map[rebal_freq_ui]
                 )
                 st.plotly_chart(fig_timeline, use_container_width=True)
-                
-                # Asset Class Details Table
-                st.markdown("#### 🏢 Asset Class Details")
-                asset_details = []
-                for ticker, weight in weights.items():
-                    if weight > 0.001:
-                        meta = asset_metadata.get(ticker, {})
-                        asset_ret = returns[ticker].mean() * 252
-                        asset_vol = returns[ticker].std() * np.sqrt(252)
-                        asset_details.append({
-                            'Asset': ticker,
-                            'Weight': f"{weight:.2%}",
-                            'Sector': meta.get('sector', 'Unknown'),
-                            'Region': meta.get('country', 'Unknown'),
-                            'Ann. Return': f"{asset_ret:.2%}",
-                            'Ann. Vol': f"{asset_vol:.2%}",
-                            'Contribution': f"{weight * asset_ret:.2%}"
-                        })
-                
-                df_details = pd.DataFrame(asset_details)
-                st.dataframe(df_details, use_container_width=True, hide_index=True)
                 
                 # Portfolio Characteristics Summary
                 st.markdown("#### 🏛️ Portfolio Characteristics")
@@ -1407,7 +2048,7 @@ if run_btn:
                     name='Optimal Portfolio'
                 ))
                 fig_ef.update_layout(xaxis_title="Expected Volatility", yaxis_title="Expected Return", 
-                                    height=600, template="plotly_dark")
+                                   height=600, template="plotly_dark")
                 st.plotly_chart(fig_ef, use_container_width=True)
             
             # --- TAB 3: DYNAMIC BACKTEST ---
@@ -1424,7 +2065,7 @@ if run_btn:
                 fig_bt.add_trace(go.Scatter(x=bench_curve.index, y=bench_curve, name="Equal Weight Index", 
                                            line=dict(color='#888', dash='dash')))
                 fig_bt.update_layout(title="Equity Curve ($100k Initial)", template="plotly_dark", 
-                                    height=500, xaxis_title="Date", yaxis_title="Portfolio Value ($)")
+                                   height=500, xaxis_title="Date", yaxis_title="Portfolio Value ($)")
                 st.plotly_chart(fig_bt, use_container_width=True)
                 
                 # Underwater Plot
@@ -1434,9 +2075,75 @@ if run_btn:
                 fig_dd = px.area(drawdown, title="Drawdown Profile", color_discrete_sequence=['#ef553b'])
                 fig_dd.update_layout(template="plotly_dark", height=300, yaxis_title="Drawdown %")
                 st.plotly_chart(fig_dd, use_container_width=True)
-            
-            # --- TAB 4: OHLC ANALYSIS ---
+
+                # Drawdown Table
+                st.subheader("Top 5 Drawdowns")
+                dd_series = drawdown
+                dd_table = []
+                # Simple logic to find worst drawdowns - finds local minima
+                sorted_dd = dd_series.sort_values(ascending=True).head(5)
+                for date, val in sorted_dd.items():
+                    dd_table.append({
+                        "Date": date.strftime('%Y-%m-%d'),
+                        "Drawdown": f"{val:.2%}"
+                    })
+                st.table(pd.DataFrame(dd_table))
+
+            # --- TAB 4: CORRELATIONS ---
             with t4:
+                st.subheader("🔗 Asset Correlation Matrix")
+                corr_matrix = returns.corr()
+                
+                fig_corr = px.imshow(
+                    corr_matrix, 
+                    text_auto=".2f", 
+                    aspect="auto", 
+                    color_continuous_scale='RdBu_r', 
+                    zmin=-1, zmax=1,
+                    title="Pearson Correlation Heatmap"
+                )
+                fig_corr.update_layout(template="plotly_dark", height=600)
+                st.plotly_chart(fig_corr, use_container_width=True)
+
+                st.markdown("---")
+                st.subheader("🧬 Hierarchical Clustering (Dendrogram)")
+                try:
+                    fig_dendro = ff.create_dendrogram(corr_matrix, labels=corr_matrix.columns)
+                    fig_dendro.update_layout(template="plotly_dark", width=800, height=500)
+                    st.plotly_chart(fig_dendro, use_container_width=True)
+                except:
+                    st.info("Requires more than 1 asset for clustering.")
+
+            # --- TAB 5: SEASONALITY ---
+            with t5:
+                st.subheader("📅 Monthly Returns Heatmap")
+                
+                # Resample portfolio returns to monthly
+                monthly_ret = port_ret_series.resample('M').apply(lambda x: (1 + x).prod() - 1)
+                monthly_ret_df = pd.DataFrame(monthly_ret)
+                monthly_ret_df['Year'] = monthly_ret_df.index.year
+                monthly_ret_df['Month'] = monthly_ret_df.index.month_name()
+                
+                # Pivot
+                pivot_ret = monthly_ret_df.pivot(index='Year', columns='Month', values=0)
+                # Reorder months
+                month_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+                pivot_ret = pivot_ret.reindex(columns=month_order)
+                
+                fig_heat = px.imshow(
+                    pivot_ret, 
+                    labels=dict(x="Month", y="Year", color="Return"),
+                    x=pivot_ret.columns,
+                    y=pivot_ret.index,
+                    color_continuous_scale='RdYlGn',
+                    text_auto=".1%",
+                    aspect="auto"
+                )
+                fig_heat.update_layout(template="plotly_dark", height=600, title="Seasonality Heatmap")
+                st.plotly_chart(fig_heat, use_container_width=True)
+
+            # --- TAB 6: OHLC ANALYSIS ---
+            with t6:
                 st.subheader("📊 Detailed OHLC Analysis")
                 tk_sel = st.selectbox("Inspect Asset", selected_tickers, key="ohlc_select")
                 if tk_sel in ohlc_data:
@@ -1453,13 +2160,14 @@ if run_btn:
                     )])
                     
                     # Add volume as bar chart
-                    fig_c.add_trace(go.Bar(
-                        x=df_ohlc.index,
-                        y=df_ohlc['Volume'],
-                        name='Volume',
-                        yaxis='y2',
-                        marker_color='rgba(100, 100, 100, 0.5)'
-                    ))
+                    if 'Volume' in df_ohlc.columns:
+                        fig_c.add_trace(go.Bar(
+                            x=df_ohlc.index,
+                            y=df_ohlc['Volume'],
+                            name='Volume',
+                            yaxis='y2',
+                            marker_color='rgba(100, 100, 100, 0.5)'
+                        ))
                     
                     fig_c.update_layout(
                         title=f"{tk_sel} - Price Action with Volume",
@@ -1484,14 +2192,15 @@ if run_btn:
                     with col2:
                         st.metric("Daily Change", f"{(df_ohlc['Close'].iloc[-1]/df_ohlc['Close'].iloc[-2]-1)*100:.2f}%")
                     with col3:
-                        st.metric("Avg Volume", f"{df_ohlc['Volume'].mean():,.0f}")
+                        if 'Volume' in df_ohlc.columns:
+                            st.metric("Avg Volume", f"{df_ohlc['Volume'].mean():,.0f}")
                     with col4:
                         st.metric("Volatility", f"{df_ohlc['Close'].pct_change().std()*np.sqrt(252)*100:.2f}%")
                 else:
                     st.warning("Detailed OHLC data unavailable for this ticker.")
             
-            # --- TAB 5: STRESS TEST ---
-            with t5:
+            # --- TAB 7: STRESS TEST ---
+            with t7:
                 st.subheader("🌪️ Macro Scenario Analysis")
                 
                 # Calculate Beta
@@ -1534,7 +2243,7 @@ if run_btn:
                     text=df_stress['Est. Portfolio Impact'],
                     textposition='auto',
                     marker_color=np.where(df_stress['Est. Portfolio Impact'].str.rstrip('%').astype(float) < 0, 
-                                        '#ef553b', '#00cc96')
+                                          '#ef553b', '#00cc96')
                 ))
                 
                 fig_stress.update_layout(
@@ -1547,8 +2256,8 @@ if run_btn:
                 )
                 st.plotly_chart(fig_stress, use_container_width=True)
             
-            # --- TAB 6: COMPARATIVE VAR ---
-            with t6:
+            # --- TAB 8: COMPARATIVE VAR ---
+            with t8:
                 st.subheader("⚠️ Comparative VaR & CVaR Engine")
                 
                 # 1. Comparison Chart
@@ -1606,8 +2315,8 @@ if run_btn:
                     var_df['Value'] = var_df['Value'].apply(lambda x: f"{x:.2%}")
                     st.table(var_df)
             
-            # --- TAB 7: ADVANCED MC SIMULATIONS ---
-            with t7:
+            # --- TAB 9: ADVANCED MC SIMULATIONS ---
+            with t9:
                 st.markdown(f"### 🎲 Advanced Monte Carlo Simulations ({mc_method} Method)")
                 st.markdown(f"**Configuration:** {mc_sims:,} simulations, {mc_days}-day horizon")
                 
@@ -1682,9 +2391,9 @@ if run_btn:
                     cvar_95 = terminal_values[terminal_values <= var_95].mean()
                     
                     fig_term.add_vline(x=var_95, line_dash="dash", line_color="red", 
-                                      annotation_text=f"VaR 95%: {var_95:.4f}")
+                                     annotation_text=f"VaR 95%: {var_95:.4f}")
                     fig_term.add_vline(x=cvar_95, line_dash="dot", line_color="orange", 
-                                      annotation_text=f"CVaR 95%: {cvar_95:.4f}")
+                                     annotation_text=f"CVaR 95%: {cvar_95:.4f}")
                     
                     fig_term.update_layout(
                         title="Distribution of Terminal Values",
@@ -1743,8 +2452,8 @@ if run_btn:
                 )
                 st.plotly_chart(fig_conv, use_container_width=True)
             
-            # --- TAB 8: QUANT LAB (GARCH & PCA) ---
-            with t8:
+            # --- TAB 10: QUANT LAB (GARCH & PCA) ---
+            with t10:
                 st.markdown("### 🔬 Quant Lab: Advanced Risk Decomposition")
                 
                 # 1. GARCH SECTION
@@ -1866,5 +2575,40 @@ if run_btn:
                     for asset, risk in top_5.items():
                         st.metric(asset, f"{risk:.4f}")
 
+            # --- EXPORT SECTION ---
+            st.sidebar.markdown("---")
+            with st.sidebar.expander("💾 Export Data"):
+                # Create CSV for weights
+                w_df = pd.DataFrame.from_dict(weights, orient='index', columns=['Weight'])
+                w_df.index.name = 'Ticker'
+                w_csv = w_df.to_csv()
+                
+                st.download_button(
+                    label="Download Weights (CSV)",
+                    data=w_csv,
+                    file_name='portfolio_weights.csv',
+                    mime='text/csv'
+                )
+
+                # Create CSV for Performance
+                perf_df = pd.DataFrame(equity_curve, columns=['Portfolio Value'])
+                perf_csv = perf_df.to_csv()
+                st.download_button(
+                    label="Download Performance (CSV)",
+                    data=perf_csv,
+                    file_name='portfolio_performance.csv',
+                    mime='text/csv'
+                )
+
 else:
     st.info("👈 Please configure the portfolio parameters in the sidebar to launch the engine.")
+    
+    # Empty State Hero
+    st.markdown("""
+    <div style="text-align: center; padding: 50px;">
+        <h1>🏛️ Enigma Institutional Terminal</h1>
+        <p style="color: #666; font-size: 18px;">
+            Advanced Portfolio Optimization, VaR/CVaR Simulation, and Factor Analysis
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
