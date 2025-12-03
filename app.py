@@ -14,7 +14,7 @@ import warnings
 # PyPortfolioOpt: The core engine for Mean-Variance Optimization
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
-from pypfopt.cla import CLA  # Critical Line Algorithm (Restored)
+from pypfopt.cla import CLA  # Critical Line Algorithm
 from pypfopt.hierarchical_portfolio import HRPOpt
 from pypfopt.black_litterman import BlackLittermanModel
 from pypfopt import objective_functions
@@ -694,14 +694,24 @@ if run_btn:
             # --- TAB 2: EFFICIENT FRONTIER ---
             with t2:
                 st.subheader("Efficient Frontier Simulation")
-                st.info("Monte Carlo simulation of 1,500 random portfolios to visualize the risk/return landscape.")
+                st.info("Monte Carlo simulation of 25,000 random portfolios to visualize the risk/return landscape.")
                 
-                n_sims = 1500
+                n_sims = 25000
                 w_rand = np.random.dirichlet(np.ones(len(selected_tickers)), n_sims)
                 
-                # Vectorized Portfolio Maths
-                r_arr = np.sum(optimizer.mu * w_rand, axis=1)
-                v_arr = np.sqrt(np.diag(w_rand @ optimizer.S @ w_rand.T))
+                # FIX: Explicit Numpy Conversion to prevent Pandas Index mismatch error
+                mu_np = optimizer.mu.to_numpy()
+                S_np = optimizer.S.to_numpy()
+                
+                # 1. Vectorized Return Calculation
+                # (25000, N) @ (N,) -> (25000,)
+                r_arr = w_rand @ mu_np
+                
+                # 2. Vectorized Volatility Calculation
+                # Efficiently compute diagonal of (w @ S @ w.T) without creating full matrix
+                # Variance = sum( (w @ S) * w, axis=1 )
+                v_arr = np.sqrt(np.sum((w_rand @ S_np) * w_rand, axis=1))
+                
                 s_arr = (r_arr - rf_rate) / v_arr
                 
                 fig_ef = go.Figure()
