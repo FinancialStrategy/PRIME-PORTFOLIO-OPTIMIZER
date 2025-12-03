@@ -71,46 +71,73 @@ US_DEFAULTS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V
 
 class PortfolioDataManager:
     """Professional-grade financial data manager with Streamlit Caching"""
-    
     @staticmethod
-    @st.cache_data(ttl=3600) # Cache data for 1 hour
+    @st.cache_data(ttl=3600)
     def fetch_data(tickers, start_date, end_date):
-        """Fetch financial data with MultiIndex fix"""
+        """Fetch financial data with robust MultiIndex and single-ticker handling"""
         if not tickers:
-            return pd.DataFrame()
+            return pd.DataFrame(), {}
             
         try:
-            # Download OHLC data
-            data = yf.download(tickers, start=start_date, end=end_date, progress=False, group_by='ticker')
+            # Force list format
+            if isinstance(tickers, str):
+                tickers = [tickers]
+
+            # 1. Download with threads=False (More stable on Streamlit Cloud)
+            data = yf.download(tickers, start=start_date, end=end_date, progress=False, group_by='ticker', threads=False)
             
-            # Extract Adj Close for calculations
             prices = pd.DataFrame()
             ohlc_dict = {}
 
+            # 2. Handle Case: Single Ticker
             if len(tickers) == 1:
                 ticker = tickers[0]
-                # Fix for yfinance structure change
                 df = data
-                prices[ticker] = df['Adj Close']
-                ohlc_dict[ticker] = df
+                
+                # If yfinance returned a MultiIndex for a single ticker (level 0 is ticker)
+                if isinstance(data.columns, pd.MultiIndex):
+                    try:
+                        df = data.xs(ticker, axis=1, level=0, drop_level=True)
+                    except:
+                        pass # Keep original if xs fails
+                
+                # Check for Adj Close, fallback to Close
+                price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+                if price_col in df.columns:
+                    prices[ticker] = df[price_col]
+                    ohlc_dict[ticker] = df
+
+            # 3. Handle Case: Multiple Tickers
             else:
+                # Ensure we are working with a MultiIndex
+                if not isinstance(data.columns, pd.MultiIndex):
+                    # Edge case: yfinance returned flat frame for multiple tickers (rare failure mode)
+                    return pd.DataFrame(), {}
+                
                 for ticker in tickers:
                     try:
-                        # Handle potential missing data
-                        if ticker in data.columns or (ticker, 'Adj Close') in data.columns:
-                            prices[ticker] = data[ticker]['Adj Close']
-                            ohlc_dict[ticker] = data[ticker]
+                        # Extract dataframe for specific ticker
+                        df = data.xs(ticker, axis=1, level=0, drop_level=True)
+                        
+                        price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+                        if price_col in df.columns:
+                            prices[ticker] = df[price_col]
+                            ohlc_dict[ticker] = df
                     except KeyError:
+                        # Ticker data missing in download
                         continue
             
-            # Fill missing values
+            # 4. Final Data Cleaning
             prices = prices.ffill().bfill()
+            
+            # validation: Drop columns that are all NaN
+            prices = prices.dropna(axis=1, how='all')
+            
             return prices, ohlc_dict
             
         except Exception as e:
-            st.error(f"Error fetching data: {e}")
+            st.error(f"Data Fetch Error: {str(e)}")
             return pd.DataFrame(), {}
-
     @staticmethod
     def calculate_returns(prices, method='log'):
         if method == 'log':
@@ -482,4 +509,5 @@ if run_btn:
 
 else:
     st.info("👈 Select assets and parameters in the sidebar, then click 'RUN ANALYSIS'")
+
 
