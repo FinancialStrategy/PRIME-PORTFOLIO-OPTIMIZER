@@ -11,11 +11,14 @@ from scipy import optimize
 import warnings
 
 # PyPortfolioOpt imports
+# PyPortfolioOpt imports - CORRECTED
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt import objective_functions
 from pypfopt.discrete_allocation import DiscreteAllocation, get_latest_prices
-from pypfopt import CLA, HRPOpt
+# Fix: Import directly from submodules to avoid namespace errors
+from pypfopt.cla import CLA
+from pypfopt.hierarchical_portfolio import HRPOpt
 from pypfopt.black_litterman import BlackLittermanModel
 from pypfopt import plotting
 
@@ -479,3 +482,4 @@ if run_btn:
 
 else:
     st.info("👈 Select assets and parameters in the sidebar, then click 'RUN ANALYSIS'")
+
