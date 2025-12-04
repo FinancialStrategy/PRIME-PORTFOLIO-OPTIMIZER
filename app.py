@@ -1624,8 +1624,8 @@ class EnhancedPortfolioDataManager:
         
         # Align returns
         common_idx = portfolio_returns.index.intersection(benchmark_returns.index)
-        portfolio_returns = portfolio_returns.loc(common_idx)
-        benchmark_returns = benchmark_returns.loc(common_idx)
+        portfolio_returns = portfolio_returns.loc[common_idx]  # FIXED: Changed .loc() to .loc[]
+        benchmark_returns = benchmark_returns.loc[common_idx]  # FIXED: Changed .loc() to .loc[]
         
         return portfolio_returns, benchmark_returns
     
@@ -2117,7 +2117,7 @@ with st.sidebar.expander("📉 Backtest Settings"):
     freq_map = {"Quarterly": "Q", "Monthly": "M", "Yearly": "Y", "Daily": "D"}
     transaction_cost = st.number_input("Transaction Cost (bps)", 0, 100, 10)
 
-run_btn = st.sidebar.button("🚀 EXECUTE ENHANCED ANALYSIS", type="primary", use_container_width=True)
+run_btn = st.sidebar.button("🚀 EXECUTE ENHANCED ANALYSIS", type="primary")
 
 # --- MAIN EXECUTION BLOCK ---
 if run_btn:
