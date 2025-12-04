@@ -1624,8 +1624,8 @@ class EnhancedPortfolioDataManager:
         
         # Align returns
         common_idx = portfolio_returns.index.intersection(benchmark_returns.index)
-        portfolio_returns = portfolio_returns.loc[common_idx]
-        benchmark_returns = benchmark_returns.loc[common_idx]
+        portfolio_returns = portfolio_returns.loc(common_idx)
+        benchmark_returns = benchmark_returns.loc(common_idx)
         
         return portfolio_returns, benchmark_returns
     
@@ -1660,7 +1660,355 @@ class EnhancedPortfolioDataManager:
         return pd.DataFrame()
 
 # ============================================================================
-# 8. MAIN APPLICATION - INTEGRATED WITH ENHANCED ATTRIBUTION
+# 8. MISSING CLASSES - ADDING THE REQUIRED ONES
+# ============================================================================
+
+class AdvancedPortfolioOptimizer:
+    """Portfolio optimization with multiple methods."""
+    
+    def __init__(self, returns, prices):
+        self.returns = returns
+        self.prices = prices
+        
+    def optimize(self, method, rf_rate, target_vol=None, target_ret=None, risk_aversion=None):
+        """Main optimization method."""
+        # Calculate expected returns and covariance matrix
+        mu = expected_returns.mean_historical_return(self.prices)
+        cov = risk_models.sample_cov(self.prices)
+        
+        if method == 'Max Sharpe':
+            ef = EfficientFrontier(mu, cov)
+            weights = ef.max_sharpe(rf_rate)
+            cleaned_weights = ef.clean_weights()
+            performance = ef.portfolio_performance(rf_rate)
+            
+        elif method == 'Min Volatility':
+            ef = EfficientFrontier(mu, cov)
+            weights = ef.min_volatility()
+            cleaned_weights = ef.clean_weights()
+            performance = ef.portfolio_performance(rf_rate)
+            
+        elif method == 'Efficient Risk':
+            ef = EfficientFrontier(mu, cov)
+            weights = ef.efficient_risk(target_vol)
+            cleaned_weights = ef.clean_weights()
+            performance = ef.portfolio_performance(rf_rate)
+            
+        elif method == 'Efficient Return':
+            ef = EfficientFrontier(mu, cov)
+            weights = ef.efficient_return(target_ret)
+            cleaned_weights = ef.clean_weights()
+            performance = ef.portfolio_performance(rf_rate)
+            
+        elif method == 'Max Quadratic Utility':
+            ef = EfficientFrontier(mu, cov)
+            weights = ef.max_quadratic_utility(risk_aversion=risk_aversion)
+            cleaned_weights = ef.clean_weights()
+            performance = ef.portfolio_performance(rf_rate)
+            
+        else:
+            raise ValueError(f"Unknown optimization method: {method}")
+        
+        return cleaned_weights, performance
+    
+    def optimize_cla(self):
+        """Critical Line Algorithm optimization."""
+        mu = expected_returns.mean_historical_return(self.prices)
+        cov = risk_models.sample_cov(self.prices)
+        
+        cla = CLA(mu, cov)
+        cla.max_sharpe()
+        weights = cla.clean_weights()
+        performance = cla.portfolio_performance()
+        
+        return weights, performance
+    
+    def optimize_hrp(self):
+        """Hierarchical Risk Parity optimization."""
+        hrp = HRPOpt(self.returns)
+        weights = hrp.optimize()
+        
+        # Calculate performance metrics
+        w_vec = np.array(list(weights.values()))
+        portfolio_returns = self.returns.dot(w_vec)
+        r = portfolio_returns.mean() * 252
+        v = portfolio_returns.std() * np.sqrt(252)
+        sharpe = r / v if v > 0 else 0
+        
+        return weights, (r, v, sharpe)
+    
+    def optimize_black_litterman(self, market_caps):
+        """Black-Litterman optimization."""
+        mu = expected_returns.mean_historical_return(self.prices)
+        cov = risk_models.sample_cov(self.prices)
+        
+        # Create market prior
+        bl = BlackLittermanModel(cov, pi=mu, market_caps=market_caps, risk_aversion=1)
+        
+        # Get equilibrium returns
+        equilibrium_returns = bl.equilibrium_returns()
+        
+        # Optimize
+        ef = EfficientFrontier(equilibrium_returns, cov)
+        weights = ef.max_sharpe()
+        cleaned_weights = ef.clean_weights()
+        performance = ef.portfolio_performance()
+        
+        return cleaned_weights, performance
+
+class AdvancedRiskMetrics:
+    """Advanced risk calculation methods."""
+    
+    @staticmethod
+    def calculate_metrics(returns, rf_rate):
+        """Calculate comprehensive risk metrics."""
+        metrics = {}
+        
+        # Basic metrics
+        metrics['Annual Return'] = returns.mean() * 252
+        metrics['Annual Volatility'] = returns.std() * np.sqrt(252)
+        metrics['Sharpe Ratio'] = (metrics['Annual Return'] - rf_rate) / metrics['Annual Volatility'] if metrics['Annual Volatility'] > 0 else 0
+        
+        # Downside metrics
+        downside_returns = returns[returns < 0]
+        metrics['Downside Deviation'] = downside_returns.std() * np.sqrt(252) if len(downside_returns) > 0 else 0
+        metrics['Sortino Ratio'] = (metrics['Annual Return'] - rf_rate) / metrics['Downside Deviation'] if metrics['Downside Deviation'] > 0 else 0
+        
+        # Drawdown
+        cumulative_returns = (1 + returns).cumprod()
+        running_max = cumulative_returns.expanding().max()
+        drawdown = (cumulative_returns - running_max) / running_max
+        metrics['Max Drawdown'] = drawdown.min()
+        
+        # VaR and CVaR
+        metrics['VaR 95%'] = np.percentile(returns, 5)
+        metrics['CVaR 95%'] = returns[returns <= metrics['VaR 95%']].mean()
+        
+        return metrics
+    
+    @staticmethod
+    def calculate_comprehensive_risk_profile(returns):
+        """Calculate comprehensive risk profile."""
+        # VaR at different confidence levels
+        var_levels = [0.90, 0.95, 0.99]
+        var_profile = {}
+        for level in var_levels:
+            var_profile[f'VaR {int(level*100)}%'] = np.percentile(returns, (1-level)*100)
+        
+        # Higher moments
+        skew = stats.skew(returns)
+        kurt = stats.kurtosis(returns)
+        
+        return var_profile, skew, kurt
+    
+    @staticmethod
+    def fit_garch_model(returns):
+        """Fit GARCH model to returns."""
+        if not HAS_ARCH:
+            return None, None
+        
+        try:
+            # Fit GARCH(1,1) model
+            am = arch.arch_model(returns * 100, vol='Garch', p=1, q=1, rescale=False)
+            res = am.fit(disp='off')
+            
+            # Get conditional volatility
+            conditional_vol = res.conditional_volatility / 100
+            
+            return res, conditional_vol
+        except:
+            return None, None
+    
+    @staticmethod
+    def calculate_component_var(returns, weights):
+        """Calculate Component VaR."""
+        # Convert weights to array
+        w_array = np.array(list(weights.values()))
+        
+        # Calculate covariance matrix
+        cov_matrix = returns.cov() * 252
+        
+        # Calculate portfolio variance
+        portfolio_variance = np.dot(w_array.T, np.dot(cov_matrix, w_array))
+        
+        # Calculate marginal VaR
+        marginal_var = np.dot(cov_matrix, w_array) / np.sqrt(portfolio_variance) * 2.33
+        
+        # Calculate component VaR
+        component_var = w_array * marginal_var
+        
+        # Create pandas series
+        comp_var_series = pd.Series(component_var, index=weights.keys())
+        
+        # Calculate PCA for diversification
+        pca = PCA(n_components=min(len(weights), 5))
+        pca.fit(returns.corr())
+        explained_variance = pca.explained_variance_ratio_
+        
+        return comp_var_series, explained_variance, pca
+
+class PortfolioDataManager:
+    """Data management utilities."""
+    
+    @staticmethod
+    def get_market_caps(tickers):
+        """Get market capitalization for tickers."""
+        market_caps = {}
+        for ticker in tickers:
+            try:
+                info = yf.Ticker(ticker).info
+                market_caps[ticker] = info.get('marketCap', 1e9)  # Default 1 billion
+            except:
+                market_caps[ticker] = 1e9
+        return market_caps
+
+# ============================================================================
+# 9. MONTE CARLO SIMULATOR (FIXED VERSION)
+# ============================================================================
+
+class MonteCarloSimulator:
+    """Monte Carlo simulation for portfolio returns."""
+    
+    def __init__(self, returns, prices):
+        self.returns = returns
+        self.prices = prices
+        
+    def simulate_gbm_copula(self, weights, n_sims=1000, days=252):
+        """Geometric Brownian Motion simulation with copula."""
+        # Convert weights to numpy array
+        if isinstance(weights, dict):
+            # Ensure weights are in the same order as returns columns
+            tickers = self.returns.columns.tolist()
+            w_array = np.array([weights.get(t, 0) for t in tickers])
+        else:
+            # Assume weights is already an array
+            w_array = np.array(weights)
+        
+        # Get returns statistics
+        mu = self.returns.mean().values * 252
+        sigma = self.returns.std().values * np.sqrt(252)
+        corr = self.returns.corr().values
+        
+        # Cholesky decomposition
+        try:
+            L = np.linalg.cholesky(corr)
+        except:
+            # If not positive definite, use nearest correlation matrix
+            from scipy import linalg
+            eigenvalues, eigenvectors = linalg.eigh(corr)
+            eigenvalues[eigenvalues < 0] = 0
+            corr = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+            L = np.linalg.cholesky(corr)
+        
+        # Simulation
+        dt = 1/252
+        n_assets = len(mu)
+        
+        # Initialize paths
+        paths = np.zeros((n_sims, n_assets, days + 1))
+        paths[:, :, 0] = 1  # Starting value of 1
+        
+        for sim in range(n_sims):
+            for t in range(1, days + 1):
+                # Generate correlated random variables
+                z = np.random.normal(0, 1, n_assets)
+                epsilon = L @ z
+                
+                # GBM update
+                for i in range(n_assets):
+                    drift = (mu[i] - 0.5 * sigma[i]**2) * dt
+                    diffusion = sigma[i] * np.sqrt(dt) * epsilon[i]
+                    paths[sim, i, t] = paths[sim, i, t-1] * np.exp(drift + diffusion)
+        
+        # Calculate portfolio paths
+        port_paths = np.zeros((n_sims, days + 1))
+        for sim in range(n_sims):
+            for t in range(days + 1):
+                port_paths[sim, t] = np.sum(w_array * paths[sim, :, t])
+        
+        # Calculate statistics
+        final_values = port_paths[:, -1]
+        mean_final = np.mean(final_values)
+        median_final = np.median(final_values)
+        std_final = np.std(final_values)
+        var_95 = np.percentile(final_values, 5)
+        cvar_95 = final_values[final_values <= var_95].mean()
+        
+        mc_stats = {
+            'Mean Final Value': mean_final,
+            'Median Final Value': median_final,
+            'Std Final Value': std_final,
+            'VaR 95%': var_95,
+            'CVaR 95%': cvar_95,
+            'Probability of Loss': np.mean(final_values < 1),
+            'Expected Shortfall': 1 - var_95
+        }
+        
+        return port_paths, mc_stats
+    
+    def simulate_students_t(self, weights, n_sims=1000, days=252, df=5):
+        """Student's t-distribution simulation."""
+        # Convert weights to numpy array
+        if isinstance(weights, dict):
+            tickers = self.returns.columns.tolist()
+            w_array = np.array([weights.get(t, 0) for t in tickers])
+        else:
+            w_array = np.array(weights)
+        
+        # Get returns statistics
+        mu = self.returns.mean().values * 252
+        sigma = self.returns.std().values * np.sqrt(252)
+        corr = self.returns.corr().values
+        
+        # Cholesky decomposition
+        try:
+            L = np.linalg.cholesky(corr)
+        except:
+            from scipy import linalg
+            eigenvalues, eigenvectors = linalg.eigh(corr)
+            eigenvalues[eigenvalues < 0] = 0
+            corr = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+            L = np.linalg.cholesky(corr)
+        
+        # Simulation
+        dt = 1/252
+        n_assets = len(mu)
+        
+        paths = np.zeros((n_sims, n_assets, days + 1))
+        paths[:, :, 0] = 1
+        
+        for sim in range(n_sims):
+            for t in range(1, days + 1):
+                # Generate t-distributed random variables
+                z = np.random.standard_t(df, n_assets) * np.sqrt((df-2)/df)
+                epsilon = L @ z
+                
+                for i in range(n_assets):
+                    drift = (mu[i] - 0.5 * sigma[i]**2) * dt
+                    diffusion = sigma[i] * np.sqrt(dt) * epsilon[i]
+                    paths[sim, i, t] = paths[sim, i, t-1] * np.exp(drift + diffusion)
+        
+        # Portfolio paths
+        port_paths = np.zeros((n_sims, days + 1))
+        for sim in range(n_sims):
+            for t in range(days + 1):
+                port_paths[sim, t] = np.sum(w_array * paths[sim, :, t])
+        
+        # Statistics
+        final_values = port_paths[:, -1]
+        mc_stats = {
+            'Mean Final Value': np.mean(final_values),
+            'Median Final Value': np.median(final_values),
+            'Std Final Value': np.std(final_values),
+            'VaR 95%': np.percentile(final_values, 5),
+            'CVaR 95%': final_values[final_values <= np.percentile(final_values, 5)].mean(),
+            'Probability of Loss': np.mean(final_values < 1)
+        }
+        
+        return port_paths, mc_stats
+
+# ============================================================================
+# 10. MAIN APPLICATION - INTEGRATED WITH ENHANCED ATTRIBUTION
 # ============================================================================
 
 # --- SIDEBAR CONFIGURATION ---
@@ -1929,7 +2277,7 @@ if run_btn:
                 dashboard_fig = visualizer.create_performance_attribution_dashboard(
                     attribution_results, rolling_attribution
                 )
-                st.plotly_chart(dashboard_fig, use_container_width=True)
+                st.plotly_chart(dashboard_fig, width='stretch')
                 
                 # Attribution Summary
                 st.markdown("### 📊 Attribution Summary")
@@ -1969,7 +2317,7 @@ if run_btn:
                         attribution_results['attribution'],
                         title="Detailed Attribution Breakdown"
                     )
-                    st.plotly_chart(waterfall_fig, use_container_width=True)
+                    st.plotly_chart(waterfall_fig, width='stretch')
                 
                 with col_wf2:
                     st.markdown("#### Attribution Insights")
@@ -2002,13 +2350,13 @@ if run_btn:
                 heatmap_fig = visualizer.create_sector_attribution_heatmap(
                     attribution_results['attribution'].get('Sector Breakdown', {})
                 )
-                st.plotly_chart(heatmap_fig, use_container_width=True)
+                st.plotly_chart(heatmap_fig, width='stretch')
                 
                 # Rolling Attribution
                 st.markdown("#### Time-Series Attribution Analysis")
                 if not rolling_attribution.empty:
                     rolling_fig = visualizer.create_rolling_attribution_chart(rolling_attribution)
-                    st.plotly_chart(rolling_fig, use_container_width=True)
+                    st.plotly_chart(rolling_fig, width='stretch')
                 
                 # Attribution Comparison
                 st.markdown("#### Attribution Quality Metrics")
@@ -2035,7 +2383,7 @@ if run_btn:
                 if factor_attribution:
                     # Factor Attribution Chart
                     factor_fig = visualizer.create_factor_attribution_chart(factor_attribution)
-                    st.plotly_chart(factor_fig, use_container_width=True)
+                    st.plotly_chart(factor_fig, width='stretch')
                     
                     # Factor Exposure Analysis
                     st.markdown("#### Portfolio Factor Exposures")
@@ -2065,7 +2413,7 @@ if run_btn:
                                 color_continuous_scale='RdYlGn'
                             )
                             fig_exp.update_layout(template="plotly_dark", height=400)
-                            st.plotly_chart(fig_exp, use_container_width=True)
+                            st.plotly_chart(fig_exp, width='stretch')
                         
                         with col_exp2:
                             st.markdown("##### Exposure Interpretation")
@@ -2186,47 +2534,50 @@ if run_btn:
                         template="plotly_dark",
                         height=400
                     )
-                    st.plotly_chart(fig_hist, use_container_width=True)
+                    st.plotly_chart(fig_hist, width='stretch')
                 
                 with dist_col2:
                     # QQ Plot
-                    import statsmodels.api as sm
-                    
-                    fig_qq = go.Figure()
-                    
-                    qq_data = sm.qqplot(returns, line='45', fit=True)
-                    plt.close()
-                    
-                    # Extract data from QQ plot
-                    theoretical = qq_data.gca().lines[0].get_xdata()
-                    sample = qq_data.gca().lines[0].get_ydata()
-                    
-                    fig_qq.add_trace(go.Scatter(
-                        x=theoretical,
-                        y=sample,
-                        mode='markers',
-                        name='Data Points',
-                        marker=dict(color='#ef553b', size=6)
-                    ))
-                    
-                    # Add 45-degree line
-                    line_x = np.linspace(min(theoretical), max(theoretical), 100)
-                    fig_qq.add_trace(go.Scatter(
-                        x=line_x,
-                        y=line_x,
-                        mode='lines',
-                        name='Normal Line',
-                        line=dict(color='white', width=2, dash='dash')
-                    ))
-                    
-                    fig_qq.update_layout(
-                        title="QQ Plot (Normality Check)",
-                        xaxis_title="Theoretical Quantiles",
-                        yaxis_title="Sample Quantiles",
-                        template="plotly_dark",
-                        height=400
-                    )
-                    st.plotly_chart(fig_qq, use_container_width=True)
+                    try:
+                        import statsmodels.api as sm
+                        
+                        fig_qq = go.Figure()
+                        
+                        qq_data = sm.qqplot(returns, line='45', fit=True)
+                        plt.close()
+                        
+                        # Extract data from QQ plot
+                        theoretical = qq_data.gca().lines[0].get_xdata()
+                        sample = qq_data.gca().lines[0].get_ydata()
+                        
+                        fig_qq.add_trace(go.Scatter(
+                            x=theoretical,
+                            y=sample,
+                            mode='markers',
+                            name='Data Points',
+                            marker=dict(color='#ef553b', size=6)
+                        ))
+                        
+                        # Add 45-degree line
+                        line_x = np.linspace(min(theoretical), max(theoretical), 100)
+                        fig_qq.add_trace(go.Scatter(
+                            x=line_x,
+                            y=line_x,
+                            mode='lines',
+                            name='Normal Line',
+                            line=dict(color='white', width=2, dash='dash')
+                        ))
+                        
+                        fig_qq.update_layout(
+                            title="QQ Plot (Normality Check)",
+                            xaxis_title="Theoretical Quantiles",
+                            yaxis_title="Sample Quantiles",
+                            template="plotly_dark",
+                            height=400
+                        )
+                        st.plotly_chart(fig_qq, width='stretch')
+                    except:
+                        st.warning("Could not create QQ plot. Statsmodels may not be installed.")
                 
                 # Skewness and Kurtosis Analysis
                 st.markdown("#### Higher Moment Analysis")
@@ -2252,8 +2603,10 @@ if run_btn:
             
             # TAB 5: MONTE CARLO SIMULATION
             with tabs[4]:
-                # Use existing Monte Carlo functionality from the original code
                 st.markdown("## 🎲 Monte Carlo Simulation Analysis")
+                
+                # Initialize Monte Carlo Simulator
+                mc_simulator = MonteCarloSimulator(portfolio_returns, prices)
                 
                 # Display simulation parameters
                 param_cols = st.columns(4)
@@ -2269,50 +2622,117 @@ if run_btn:
                 with param_cols[3]:
                     st.metric("Risk-Free Rate", f"{rf_rate:.2%}")
                 
-                # Note: The actual Monte Carlo simulation code from the original app
-                # would be integrated here. For brevity, we're showing the structure.
-                st.info("Monte Carlo simulation engine loaded from original implementation.")
+                # Run Monte Carlo simulation
+                st.info(f"Running {mc_sims} Monte Carlo simulations with {mc_method} method...")
                 
-                # Placeholder for Monte Carlo results
-                st.markdown("#### Simulation Results Preview")
-                
-                # Create sample Monte Carlo visualization
-                fig_mc = go.Figure()
-                
-                # Sample paths
-                for i in range(10):
-                    # Generate sample path (in real implementation, use actual simulation)
-                    days = mc_days
-                    drift = 0.0005
-                    volatility = 0.01
-                    path = np.cumprod(1 + np.random.normal(drift, volatility, days))
+                try:
+                    if mc_method == "GBM":
+                        mc_paths, mc_stats = mc_simulator.simulate_gbm_copula(weights, n_sims=mc_sims, days=mc_days)
+                    elif mc_method == "Student's t":
+                        mc_paths, mc_stats = mc_simulator.simulate_students_t(weights, n_sims=mc_sims, days=mc_days, df=df_t)
+                    else:
+                        # Default to GBM for other methods
+                        mc_paths, mc_stats = mc_simulator.simulate_gbm_copula(weights, n_sims=mc_sims, days=mc_days)
+                    
+                    # Display Monte Carlo results
+                    st.markdown("#### Simulation Results")
+                    
+                    # Key statistics
+                    mc_cols = st.columns(4)
+                    with mc_cols[0]:
+                        st.metric("Mean Final Value", f"{mc_stats.get('Mean Final Value', 0):.2f}")
+                    
+                    with mc_cols[1]:
+                        st.metric("VaR 95%", f"{mc_stats.get('VaR 95%', 0):.2f}")
+                    
+                    with mc_cols[2]:
+                        st.metric("CVaR 95%", f"{mc_stats.get('CVaR 95%', 0):.2f}")
+                    
+                    with mc_cols[3]:
+                        st.metric("Prob. of Loss", f"{mc_stats.get('Probability of Loss', 0):.2%}")
+                    
+                    # Create Monte Carlo visualization
+                    st.markdown("#### Simulation Paths")
+                    
+                    fig_mc = go.Figure()
+                    
+                    # Sample paths (show first 100 for clarity)
+                    n_sample_paths = min(100, mc_sims)
+                    for i in range(n_sample_paths):
+                        fig_mc.add_trace(go.Scatter(
+                            x=list(range(mc_days + 1)),
+                            y=mc_paths[i, :],
+                            mode='lines',
+                            line=dict(width=1, color='rgba(100, 100, 100, 0.1)'),
+                            showlegend=False
+                        ))
+                    
+                    # Mean path
+                    mean_path = np.mean(mc_paths, axis=0)
+                    fig_mc.add_trace(go.Scatter(
+                        x=list(range(mc_days + 1)),
+                        y=mean_path,
+                        mode='lines',
+                        name='Expected Path',
+                        line=dict(color='#00cc96', width=3)
+                    ))
+                    
+                    # Confidence bands
+                    upper_band = np.percentile(mc_paths, 95, axis=0)
+                    lower_band = np.percentile(mc_paths, 5, axis=0)
                     
                     fig_mc.add_trace(go.Scatter(
-                        x=list(range(days)),
-                        y=path,
-                        mode='lines',
-                        line=dict(width=1, color='rgba(100, 100, 100, 0.3)'),
-                        showlegend=False
+                        x=list(range(mc_days + 1)) + list(range(mc_days + 1))[::-1],
+                        y=list(upper_band) + list(lower_band[::-1]),
+                        fill='toself',
+                        fillcolor='rgba(0, 204, 150, 0.2)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        name='90% Confidence Band',
+                        showlegend=True
                     ))
-                
-                # Mean path
-                fig_mc.add_trace(go.Scatter(
-                    x=list(range(mc_days)),
-                    y=np.ones(mc_days) * (1 + drift * mc_days),  # Simplified mean
-                    mode='lines',
-                    name='Expected Path',
-                    line=dict(color='#00cc96', width=3)
-                ))
-                
-                fig_mc.update_layout(
-                    title="Sample Monte Carlo Simulation Paths",
-                    xaxis_title="Days",
-                    yaxis_title="Portfolio Value (Normalized)",
-                    template="plotly_dark",
-                    height=500
-                )
-                
-                st.plotly_chart(fig_mc, use_container_width=True)
+                    
+                    fig_mc.update_layout(
+                        title="Monte Carlo Simulation Paths",
+                        xaxis_title="Days",
+                        yaxis_title="Portfolio Value (Normalized)",
+                        template="plotly_dark",
+                        height=500,
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig_mc, width='stretch')
+                    
+                    # Final value distribution
+                    st.markdown("#### Final Value Distribution")
+                    
+                    fig_dist = go.Figure()
+                    
+                    fig_dist.add_trace(go.Histogram(
+                        x=mc_paths[:, -1],
+                        nbinsx=50,
+                        name='Final Values',
+                        marker_color='#636efa',
+                        opacity=0.7
+                    ))
+                    
+                    # Add vertical lines for key statistics
+                    fig_dist.add_vline(x=1, line_dash="dash", line_color="white", annotation_text="Initial Value")
+                    fig_dist.add_vline(x=mc_stats.get('Mean Final Value', 1), line_dash="dash", line_color="#00cc96", annotation_text="Mean")
+                    fig_dist.add_vline(x=mc_stats.get('VaR 95%', 0.9), line_dash="dash", line_color="#ef553b", annotation_text="VaR 95%")
+                    
+                    fig_dist.update_layout(
+                        title="Distribution of Final Portfolio Values",
+                        xaxis_title="Final Value",
+                        yaxis_title="Frequency",
+                        template="plotly_dark",
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig_dist, width='stretch')
+                    
+                except Exception as e:
+                    st.error(f"Monte Carlo simulation failed: {str(e)}")
+                    st.info("Using simplified Monte Carlo visualization as fallback.")
             
             # TAB 6: ADVANCED ANALYTICS
             with tabs[5]:
@@ -2355,25 +2775,28 @@ if run_btn:
                             height=400
                         )
                         
-                        st.plotly_chart(fig_garch, use_container_width=True)
+                        st.plotly_chart(fig_garch, width='stretch')
                         
                         if garch_model is not None:
                             # Display GARCH parameters
                             st.markdown("##### GARCH(1,1) Parameters")
                             
                             garch_cols = st.columns(4)
-                            with garch_cols[0]:
-                                st.metric("Alpha (ARCH)", f"{garch_model.params['alpha[1]']:.4f}")
-                            
-                            with garch_cols[1]:
-                                st.metric("Beta (GARCH)", f"{garch_model.params['beta[1]']:.4f}")
-                            
-                            with garch_cols[2]:
-                                st.metric("Omega", f"{garch_model.params['omega']:.6f}")
-                            
-                            with garch_cols[3]:
-                                persistence = garch_model.params['alpha[1]'] + garch_model.params['beta[1]']
-                                st.metric("Persistence", f"{persistence:.4f}")
+                            try:
+                                with garch_cols[0]:
+                                    st.metric("Alpha (ARCH)", f"{garch_model.params['alpha[1]']:.4f}")
+                                
+                                with garch_cols[1]:
+                                    st.metric("Beta (GARCH)", f"{garch_model.params['beta[1]']:.4f}")
+                                
+                                with garch_cols[2]:
+                                    st.metric("Omega", f"{garch_model.params['omega']:.6f}")
+                                
+                                with garch_cols[3]:
+                                    persistence = garch_model.params['alpha[1]'] + garch_model.params['beta[1]']
+                                    st.metric("Persistence", f"{persistence:.4f}")
+                            except:
+                                st.warning("Could not extract GARCH parameters.")
                     else:
                         st.warning("GARCH model fitting failed.")
                 else:
@@ -2415,7 +2838,7 @@ if run_btn:
                         height=400
                     )
                     
-                    st.plotly_chart(fig_pca, use_container_width=True)
+                    st.plotly_chart(fig_pca, width='stretch')
                 
                 with pca_col2:
                     # Component VaR
@@ -2437,7 +2860,7 @@ if run_btn:
                         xaxis_title="Risk Contribution (%)"
                     )
                     
-                    st.plotly_chart(fig_cvar, use_container_width=True)
+                    st.plotly_chart(fig_cvar, width='stretch')
                 
                 # Correlation Analysis
                 st.markdown("#### Correlation Structure")
@@ -2459,7 +2882,7 @@ if run_btn:
                     height=500
                 )
                 
-                st.plotly_chart(fig_corr, use_container_width=True)
+                st.plotly_chart(fig_corr, width='stretch')
             
             # --- EXPORT SECTION ---
             st.sidebar.markdown("---")
