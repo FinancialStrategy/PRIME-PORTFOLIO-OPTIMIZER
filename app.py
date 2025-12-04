@@ -1,7 +1,7 @@
-# app_yedek_V02_complete_enhanced_fixed_v2.py
+# app_yedek_V02_complete_enhanced_fixed_v3.py
 # Complete Institutional Portfolio Analysis Platform with Enhanced Attribution System
 # Integrated with real benchmark data (SP500 for global/US, XU030 for Turkish assets)
-# Fixed: Proper attribution logic using time-series data, removed hardcoded returns, and dashboard error fixes.
+# Fixed: Proper attribution logic, dashboard errors, and removed the specified redundant HTML block.
 
 # ============================================================================
 # 1. CORE IMPORTS
@@ -453,7 +453,6 @@ class EnhancedPortfolioAttributionPro:
         all_assets = portfolio_returns_df.columns.tolist()
         
         # Ensure benchmark returns are compounded for the period (Total Return)
-        # Assuming benchmark is the overall return against which attribution is performed.
         R_b_total = (1 + benchmark_returns_series).prod() - 1
         
         # Calculate portfolio weights, setting benchmark weights to equal weight for simplicity 
@@ -1784,15 +1783,6 @@ class AdvancedRiskMetrics:
         # Calculate portfolio variance
         portfolio_variance = np.dot(w_filtered.T, np.dot(cov_matrix, w_filtered))
         
-        # Calculate Marginal VaR: MVaR_i = d(VaR_p) / d(w_i) 
-        # Approximating MVaR using the linear approximation based on portfolio volatility (sqrt(var_p))
-        # Note: This gives Marginal Contribution to Volatility (MCoVaR) * -alpha_level, not true MVaR
-        # For simplicity, sticking to MCoVaR for risk contribution visualization:
-        
-        # Beta of asset returns w.r.t portfolio returns
-        # portfolio_returns = returns_filtered.dot(w_filtered)
-        # beta_vector = returns_filtered.cov().dot(w_filtered) / portfolio_returns.var()
-        
         # Marginal Contribution to Volatility (MCV) - simpler and more stable calculation
         MCV = np.dot(cov_matrix, w_filtered) / np.sqrt(portfolio_variance)
         
@@ -2921,7 +2911,7 @@ if run_btn:
             st.exception(e)
 
 else:
-    # Empty state with updated welcome message - REMOVED SPECIFIC HTML BLOCK
+    # Empty state with updated welcome message - REMOVED SPECIFIED HTML BLOCK
     st.markdown("""
     <div style="text-align: center; padding: 60px 20px;">
         <h1 style="color: #00cc96; font-size: 48px; margin-bottom: 20px;">🏛️ Enigma Institutional Terminal Pro</h1>
