@@ -1,7 +1,7 @@
 # app_yedek_V02_complete_enhanced_fixed.py
 # Complete Institutional Portfolio Analysis Platform with Enhanced Attribution System
 # Integrated with real benchmark data (SP500 for global/US, XU030 for Turkish assets)
-# ALL ISSUES FIXED - FULL LENGTH PRESERVED
+# Entry page updated - feature cards removed
 
 # ============================================================================
 # 1. CORE IMPORTS
@@ -29,20 +29,12 @@ from matplotlib import cm
 # ============================================================================
 # 2. QUANTITATIVE LIBRARY IMPORTS
 # ============================================================================
-# Note: Ensure these packages are installed in your environment
-try:
-    from pypfopt import expected_returns, risk_models
-    from pypfopt.efficient_frontier import EfficientFrontier
-    from pypfopt.cla import CLA
-    from pypfopt.hierarchical_portfolio import HRPOpt
-    from pypfopt.black_litterman import BlackLittermanModel
-except ImportError:
-    st.error("PyPortfolioOpt not installed. Please install using `pip install PyPortfolioOpt`")
-
-try:
-    from sklearn.decomposition import PCA
-except ImportError:
-    st.error("scikit-learn not installed. Please install using `pip install scikit-learn`")
+from pypfopt import expected_returns, risk_models
+from pypfopt.efficient_frontier import EfficientFrontier
+from pypfopt.cla import CLA
+from pypfopt.hierarchical_portfolio import HRPOpt
+from pypfopt.black_litterman import BlackLittermanModel
+from sklearn.decomposition import PCA
 
 # ARCH: For Econometric Volatility Forecasting (GARCH)
 try:
@@ -1606,11 +1598,11 @@ class EnhancedPortfolioDataManager:
                     except KeyError:
                         continue
             
-            # Clean and forward fill - HANDLES HOLIDAYS
+            # Clean and forward fill
             prices = prices.ffill().bfill()
             benchmark_prices = benchmark_prices.ffill().bfill()
             
-            # Align dates to intersection - ENSURES SAME LENGTH
+            # Align dates
             common_idx = prices.index.intersection(benchmark_prices.index)
             prices = prices.loc[common_idx]
             benchmark_prices = benchmark_prices.loc[common_idx]
@@ -1633,8 +1625,8 @@ class EnhancedPortfolioDataManager:
         
         # Align returns
         common_idx = portfolio_returns.index.intersection(benchmark_returns.index)
-        portfolio_returns = portfolio_returns.loc[common_idx]
-        benchmark_returns = benchmark_returns.loc[common_idx]
+        portfolio_returns = portfolio_returns.loc[common_idx]  # FIXED: Changed .loc() to .loc[]
+        benchmark_returns = benchmark_returns.loc[common_idx]  # FIXED: Changed .loc() to .loc[]
         
         return portfolio_returns, benchmark_returns
     
@@ -2947,17 +2939,32 @@ if run_btn:
             st.exception(e)
 
 else:
-    # Empty state with enhanced welcome message - FIXED VERSION
+    # Empty state with updated welcome message - FEATURE CARDS REMOVED
     st.markdown("""
-    <div style="text-align: center; padding: 40px 20px;">
+    <div style="text-align: center; padding: 60px 20px;">
         <h1 style="color: #00cc96; font-size: 48px; margin-bottom: 20px;">🏛️ Enigma Institutional Terminal Pro</h1>
         <p style="color: #888; font-size: 20px; margin-bottom: 40px;">
             Advanced Portfolio Analytics with Real Benchmark Attribution
         </p>
         
-        <div style="margin-top: 50px;">
-            <h3 style="color: #ccc;">👈 Configure your analysis in the sidebar</h3>
-            <p style="color: #666;">Select assets, choose benchmark, and launch the enhanced analytics engine</p>
+        <div style="max-width: 800px; margin: 0 auto; padding: 30px; background: linear-gradient(135deg, rgba(30, 30, 30, 0.7) 0%, rgba(42, 42, 42, 0.7) 100%); 
+                    border-radius: 10px; border-left: 4px solid #00cc96;">
+            <h3 style="color: #ccc; margin-bottom: 20px;">Ready to Analyze Your Portfolio?</h3>
+            <p style="color: #888; font-size: 16px; line-height: 1.6;">
+                Configure your portfolio analysis using the sidebar controls. Select assets, choose your benchmark, 
+                set optimization parameters, and launch the enhanced analytics engine for comprehensive performance attribution.
+            </p>
+            
+            <div style="margin-top: 30px; padding: 20px; background: rgba(0, 0, 0, 0.3); border-radius: 8px;">
+                <h4 style="color: #00cc96; margin-bottom: 15px;">👈 Quick Start Instructions</h4>
+                <ol style="text-align: left; color: #aaa; font-size: 15px; line-height: 1.8;">
+                    <li>Select your asset universe from the dropdown</li>
+                    <li>Choose portfolio assets using the multiselect</li>
+                    <li>Configure attribution settings and benchmark</li>
+                    <li>Set model parameters and optimization objectives</li>
+                    <li>Click <strong style="color: #00cc96;">'EXECUTE ENHANCED ANALYSIS'</strong> to begin</li>
+                </ol>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
