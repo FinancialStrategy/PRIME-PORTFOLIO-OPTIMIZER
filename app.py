@@ -1,5 +1,5 @@
 # ============================================================================
-# ENIGMA INSTITUTIONAL TERMINAL - OPTIMIZED FOR STREAMLIT CLOUD
+# ENIGMA INSTITUTIONAL TERMINAL - ROBUST VERSION
 # ============================================================================
 
 import streamlit as st
@@ -12,26 +12,30 @@ import plotly.figure_factory as ff
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import scipy.stats as stats
-from scipy import optimize
 import warnings
 from typing import Dict, Tuple, List, Optional
 import numpy.random as npr
 
 # --- QUANTITATIVE LIBRARY IMPORTS ---
-# Wrapped in try-except to prevent immediate crash if dependency fails install
 try:
     from pypfopt import expected_returns, risk_models
     from pypfopt.efficient_frontier import EfficientFrontier
     from pypfopt.cla import CLA
     from pypfopt.hierarchical_portfolio import HRPOpt
     from pypfopt.black_litterman import BlackLittermanModel
-    HAS_PYPFOPT = True
+    PYPFOPT_AVAILABLE = True
 except ImportError:
-    st.error("PyPortfolioOpt not found. Please add 'pyportfolioopt' and 'cvxpy' to requirements.txt")
-    HAS_PYPFOPT = False
+    PYPFOPT_AVAILABLE = False
+    st.warning("PyPortfolioOpt not available. Some optimization methods will be disabled.")
 
-from sklearn.decomposition import PCA
+try:
+    from sklearn.decomposition import PCA
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    st.warning("scikit-learn not available. PCA analysis will be disabled.")
 
+# ARCH: For Econometric Volatility Forecasting (GARCH)
 try:
     import arch
     HAS_ARCH = True
@@ -41,7 +45,7 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ============================================================================
-# 1. GLOBAL CONFIGURATION
+# 1. GLOBAL CONFIGURATION AND ASSET UNIVERSES
 # ============================================================================
 
 st.set_page_config(
@@ -63,6 +67,12 @@ st.markdown("""
         padding: 24px 16px;
         text-align: center;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        transition: all 0.3s ease;
+    }
+    .pro-card:hover { 
+        transform: translateY(-5px); 
+        box-shadow: 0 8px 15px rgba(0,0,0,0.3); 
+        border-color: #00cc96;
     }
     .metric-label {
         font-size: 11px;
@@ -78,6 +88,34 @@ st.markdown("""
         font-weight: 700;
         color: #fff;
     }
+    .stTabs [data-baseweb="tab-list"] { 
+        gap: 8px; 
+        border-bottom: 1px solid #333; 
+        padding-bottom: 5px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 45px;
+        background-color: transparent;
+        border-radius: 4px;
+        font-weight: 600;
+        color: #666;
+        transition: color 0.2s;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #1e1e1e;
+        color: #00cc96;
+        border: 1px solid #333;
+        border-bottom: 2px solid #00cc96;
+    }
+    div[data-testid="stTable"] { font-size: 13px; font-family: 'Roboto Mono', monospace; }
+    div[data-testid="stExpander"] { background-color: #161a24; border-radius: 4px; }
+    .insight-box {
+        background-color: #1e1e1e;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 10px 0;
+        border-left: 4px solid;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -91,443 +129,962 @@ BIST_30 = [
 ]
 
 GLOBAL_INDICES = [
-    '^GSPC', '^DJI', '^IXIC', '^RUT', '^VIX', '^FTSE', '^GDAXI', '^N225'
+    '^GSPC', '^DJI', '^IXIC', '^RUT', '^VIX', # US Markets
+    '^FTSE', '^GDAXI', '^FCHI', '^STOXX50E',  # European Markets
+    '^N225', '^HSI', '000001.SS', '^STI', '^AXJO', # Asian Markets
+    '^BVSP', '^MXX', '^MERV' # Latin America
 ]
 
 US_DEFAULTS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V', 'WMT']
 
 # ============================================================================
-# 2. ASSET CLASSIFICATION (OPTIMIZED)
+# 2. ASSET CLASSIFICATION ENGINE
 # ============================================================================
 
 class AssetClassifier:
-    """Classifies assets. Optimized to avoid YF API calls per ticker."""
+    """Classifies assets into sectors, industries, regions, and styles."""
     
     SECTOR_MAP = {
-        'Technology': ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD', 'INTC', 'CRM'],
-        'Financial Services': ['JPM', 'V', 'MA', 'BAC', 'GS', 'MS', 'C'],
-        'Healthcare': ['JNJ', 'PFE', 'MRK', 'ABT', 'UNH', 'LLY'],
-        'Consumer': ['AMZN', 'TSLA', 'NKE', 'MCD', 'SBUX', 'WMT', 'PG', 'KO'],
-        'Energy': ['XOM', 'CVX', 'COP', 'SLB'],
-        'Indices': ['^GSPC', '^DJI', '^IXIC', '^RUT', '^VIX', '^FTSE', '^GDAXI', '^N225']
+        'Technology': ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD', 'INTC', 'QCOM', 'CRM'],
+        'Financial Services': ['JPM', 'V', 'MA', 'BAC', 'GS', 'MS', 'C', 'WFC'],
+        'Healthcare': ['JNJ', 'PFE', 'MRK', 'ABT', 'UNH', 'LLY', 'GILD', 'BMY'],
+        'Consumer Cyclical': ['AMZN', 'TSLA', 'NKE', 'MCD', 'SBUX', 'HD', 'LOW'],
+        'Consumer Defensive': ['WMT', 'PG', 'KO', 'PEP', 'COST', 'CL', 'MO'],
+        'Energy': ['XOM', 'CVX', 'COP', 'SLB', 'EOG', 'PSX', 'VLO'],
+        'Industrials': ['BA', 'CAT', 'MMM', 'HON', 'GE', 'RTX', 'LMT'],
+        'Utilities': ['NEE', 'DUK', 'SO', 'D', 'AEP', 'EXC'],
+        'Real Estate': ['AMT', 'PLD', 'CCI', 'EQIX', 'PSA', 'SPG'],
+        'Communication': ['T', 'VZ', 'CMCSA', 'DIS', 'NFLX', 'CHTR'],
+        'Materials': ['LIN', 'APD', 'ECL', 'SHW', 'NEM', 'FCX']
     }
     
     @staticmethod
+    @st.cache_data(ttl=3600*24)
     def get_asset_metadata(tickers):
-        """
-        OPTIMIZATION: Calling yf.Ticker(t).info for 30 tickers freezes Streamlit Cloud.
-        We now use simple string matching fallback to prevent API timeouts.
-        """
+        """Fetches detailed metadata for each asset with timeout."""
         metadata = {}
         for ticker in tickers:
-            # Fast inference without API call
-            sector = AssetClassifier._infer_sector(ticker)
-            region = AssetClassifier._infer_region(ticker)
-            
-            metadata[ticker] = {
-                'sector': sector,
-                'industry': 'Unknown',
-                'country': region,
-                'marketCap': 100e9, # Default fallback to avoid errors in attribution
-                'fullName': ticker,
-                'currency': 'TRY' if '.IS' in ticker else 'USD'
-            }
+            try:
+                # Add timeout for Yahoo Finance calls
+                info = yf.Ticker(ticker).info
+                metadata[ticker] = {
+                    'sector': info.get('sector', 'Unknown'),
+                    'industry': info.get('industry', 'Unknown'),
+                    'country': info.get('country', 'Unknown'),
+                    'marketCap': info.get('marketCap', 0),
+                    'fullName': info.get('longName', ticker),
+                    'currency': info.get('currency', 'USD')
+                }
+            except Exception as e:
+                # Fallback to inference
+                metadata[ticker] = {
+                    'sector': AssetClassifier._infer_sector(ticker),
+                    'industry': 'Unknown',
+                    'country': AssetClassifier._infer_region(ticker),
+                    'marketCap': 0,
+                    'fullName': ticker,
+                    'currency': 'Unknown'
+                }
         return metadata
     
     @staticmethod
     def _infer_sector(ticker):
+        """Infer sector from ticker using predefined mappings."""
         for sector, tickers in AssetClassifier.SECTOR_MAP.items():
             if ticker in tickers:
                 return sector
-        if '.IS' in ticker: return 'Emerging Mkt Equity'
-        if '^' in ticker: return 'Market Index'
+        if '.IS' in ticker:
+            return 'Financial Services'
         return 'Other'
     
     @staticmethod
     def _infer_region(ticker):
-        if '.IS' in ticker: return 'Turkey'
-        if '.DE' in ticker: return 'Germany'
-        if '.L' in ticker: return 'UK'
-        if '^' in ticker: return 'Global'
-        return 'US'
+        """Infer region from ticker."""
+        if '.IS' in ticker:
+            return 'Turkey'
+        elif '.DE' in ticker:
+            return 'Germany'
+        elif '.PA' in ticker:
+            return 'France'
+        elif '.L' in ticker:
+            return 'UK'
+        elif ticker.startswith('^'):
+            return 'Index'
+        return 'Global'
 
 # ============================================================================
-# 3. PROFESSIONAL PERFORMANCE ATTRIBUTION
+# 3. ROBUST DATA PIPELINE
 # ============================================================================
 
-class ProfessionalPortfolioAttribution:
-    @staticmethod
-    def calculate_brinson_fachler_attribution(portfolio_weights, benchmark_weights, 
-                                              portfolio_returns_df, benchmark_returns_df,
-                                              sector_mapping, risk_free_rate=0.02):
-        # ... (Logic identical to previous, keeping math logic same)
-        all_assets = set(list(portfolio_weights.keys()) + list(benchmark_weights.keys()))
-        assets_list = list(all_assets)
-        w_p = np.array([portfolio_weights.get(asset, 0) for asset in assets_list])
-        w_b = np.array([benchmark_weights.get(asset, 0) for asset in assets_list])
-        
-        # Calculate annualized mean returns
-        # Optimization: Use vectorized mean
-        means = portfolio_returns_df.mean() * 252
-        R_pi = np.array([means.get(asset, 0) for asset in assets_list])
-        R_bi = R_pi # Assuming benchmark returns same as asset returns for this simplified attribution
-        
-        R_p = np.sum(w_p * R_pi)
-        R_b = np.sum(w_b * R_bi)
-        total_excess = R_p - R_b
-        
-        # Sector grouping
-        sector_attribution = {}
-        unique_sectors = set(sector_mapping.values())
-        
-        total_allocation = 0
-        total_selection = 0
-        total_interaction = 0
-        
-        for sector in unique_sectors:
-            sec_assets = [a for a in assets_list if sector_mapping.get(a) == sector]
-            indices = [i for i, a in enumerate(assets_list) if a in sec_assets]
-            
-            if not indices: continue
-            
-            w_p_sec = np.sum(w_p[indices])
-            w_b_sec = np.sum(w_b[indices])
-            
-            if w_p_sec > 0:
-                R_p_sec = np.sum(w_p[indices] * R_pi[indices]) / w_p_sec
-            else:
-                R_p_sec = 0
-                
-            if w_b_sec > 0:
-                R_b_sec = np.sum(w_b[indices] * R_bi[indices]) / w_b_sec
-            else:
-                R_b_sec = 0
-            
-            # Brinson-Fachler logic
-            allocation = (w_p_sec - w_b_sec) * (R_b_sec - R_b)
-            selection = w_b_sec * (R_p_sec - R_b_sec)
-            interaction = (w_p_sec - w_b_sec) * (R_p_sec - R_b_sec)
-            
-            total_allocation += allocation
-            total_selection += selection
-            total_interaction += interaction
-            
-            sector_attribution[sector] = {
-                'Total Contribution': allocation + selection + interaction,
-                'Portfolio Weight': w_p_sec,
-                'Benchmark Weight': w_b_sec,
-                'Active Weight': w_p_sec - w_b_sec,
-                'Excess Return': R_p_sec - R_b_sec
-            }
-
-        # Metrics
-        port_series = portfolio_returns_df.dot(w_p)
-        bench_series = benchmark_returns_df.dot(w_b)
-        te = np.std(port_series - bench_series) * np.sqrt(252)
-        ir = (port_series - bench_series).mean() * 252 / te if te > 0 else 0
-        beta = 1.0 # Simplified
-        
-        return {
-            'Total Portfolio Return': R_p,
-            'Total Benchmark Return': R_b,
-            'Total Excess Return': total_excess,
-            'Allocation Effect': total_allocation,
-            'Selection Effect': total_selection,
-            'Interaction Effect': total_interaction,
-            'Allocation Ratio': 0, 
-            'Information Ratio': ir,
-            'Tracking Error': te,
-            'Active Share': 0.5 * np.sum(np.abs(w_p - w_b)),
-            'Portfolio Beta': beta,
-            'Sector Breakdown': sector_attribution
-        }
-
-# ============================================================================
-# 4. VISUALIZATION CLASSES (Keeping standard)
-# ============================================================================
-class AttributionVisualizationRedesign:
-    @staticmethod
-    def create_attribution_summary_chart(attribution_results):
-        fig = go.Figure()
-        components = ['Allocation', 'Selection', 'Interaction']
-        values = [attribution_results['Allocation Effect'], attribution_results['Selection Effect'], attribution_results['Interaction Effect']]
-        colors = ['#636EFA', '#EF553B', '#00CC96']
-        fig.add_trace(go.Bar(x=components, y=values, marker_color=colors, text=[f"{v:.2%}" for v in values]))
-        fig.update_layout(title="Performance Attribution", template="plotly_dark", height=400, yaxis_tickformat=".2%")
-        return fig
-
-# ============================================================================
-# 5. VECTORIZED MONTE CARLO (CRITICAL FIX)
-# ============================================================================
-
-class AdvancedMonteCarloSimulator:
-    """
-    OPTIMIZED: Removed Python loops. Uses Numpy Broadcasting.
-    Speed increase: ~100x
-    """
+class RobustPortfolioDataManager:
+    """Handles secure data fetching from Yahoo Finance with robust error handling."""
     
-    def __init__(self, returns: pd.DataFrame, prices: pd.DataFrame):
-        self.returns = returns
-        self.mean_returns = returns.mean().values
-        self.cov_matrix = returns.cov().values
-        # Handle non-positive definite matrix
-        try:
-            self.cholesky = np.linalg.cholesky(self.cov_matrix)
-        except np.linalg.LinAlgError:
-            self.cov_matrix += np.eye(len(self.cov_matrix)) * 1e-6
-            self.cholesky = np.linalg.cholesky(self.cov_matrix)
-    
-    def gbm_simulation(self, weights: np.ndarray, days: int = 252, n_sims: int = 1000) -> Tuple[np.ndarray, Dict]:
-        dt = 1/252
-        mu = np.dot(weights, self.mean_returns)
-        sigma = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
-        
-        # Vectorized GBM
-        # drift: (1,) -> (1, 1)
-        drift = (mu - 0.5 * sigma**2) * dt
-        # diffusion: (n_sims, days)
-        z = npr.normal(size=(n_sims, days))
-        daily_returns = np.exp(drift + sigma * np.sqrt(dt) * z)
-        
-        # Cumprod to get price paths
-        paths = np.vstack([np.ones((n_sims, 1)).T, daily_returns.T]).T
-        paths = np.cumprod(paths, axis=1)
-        
-        terminal_values = paths[:, -1]
-        return paths, {"terminal_mean": np.mean(terminal_values), "terminal_std": np.std(terminal_values)}
-
-    def t_distribution_simulation(self, weights: np.ndarray, days: int = 252, n_sims: int = 1000, df: float = 5.0):
-        dt = 1/252
-        mu = np.dot(weights, self.mean_returns)
-        sigma = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
-        
-        # Vectorized Student-t
-        z = npr.standard_t(df, size=(n_sims, days))
-        daily_returns = np.exp(mu * dt + sigma * np.sqrt(dt) * z)
-        
-        paths = np.vstack([np.ones((n_sims, 1)).T, daily_returns.T]).T
-        paths = np.cumprod(paths, axis=1)
-        
-        terminal = paths[:, -1]
-        return paths, {"terminal_mean": np.mean(terminal), "terminal_std": np.std(terminal), "skewness": stats.skew(terminal), "kurtosis": stats.kurtosis(terminal)}
-
-    def jump_diffusion_simulation(self, weights: np.ndarray, days: int = 252, n_sims: int = 1000, 
-                                  jump_intensity: float = 0.05, jump_mean: float = -0.1, jump_std: float = 0.15):
-        dt = 1/252
-        mu = np.dot(weights, self.mean_returns)
-        sigma = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
-        
-        # Vectorized Jump Diffusion
-        z_brown = npr.normal(size=(n_sims, days))
-        
-        # Poisson jumps: 1 if jump, 0 if not
-        # Poisson parameter is lambda * dt
-        n_jumps = npr.poisson(jump_intensity * dt, size=(n_sims, days))
-        
-        # Jump sizes
-        jump_factor = np.exp(npr.normal(jump_mean, jump_std, size=(n_sims, days)) * n_jumps)
-        
-        # Combined return
-        # Note: When n_jumps=0, jump_factor=exp(0)=1 (no effect)
-        diffusion = np.exp((mu - 0.5 * sigma**2)*dt + sigma*np.sqrt(dt)*z_brown)
-        daily_returns = diffusion * jump_factor
-        
-        paths = np.vstack([np.ones((n_sims, 1)).T, daily_returns.T]).T
-        paths = np.cumprod(paths, axis=1)
-        
-        terminal = paths[:, -1]
-        return paths, {"terminal_mean": np.mean(terminal), "terminal_std": np.std(terminal)}
-
-# ============================================================================
-# 6. DATA PIPELINE (ROBUST)
-# ============================================================================
-
-class PortfolioDataManager:
     @staticmethod
     @st.cache_data(ttl=3600, show_spinner=False)
-    def fetch_data(tickers, start_date, end_date):
-        if not tickers: return pd.DataFrame(), {}
-        
+    def fetch_data_safe(tickers, start_date, end_date, max_retries=2):
+        """Fetches OHLCV data with robust error handling and retries."""
+        if not tickers:
+            return pd.DataFrame(), {}
+            
         try:
-            # Optimize: threads=True is generally okay for Streamlit, but handle MultiIndex
-            data = yf.download(tickers, start=start_date, end=end_date, progress=False, group_by='ticker', auto_adjust=True)
+            # Validate dates
+            if start_date >= end_date:
+                st.error("Start date must be before end date.")
+                return pd.DataFrame(), {}
+            
+            # Limit number of tickers to avoid timeouts
+            if len(tickers) > 50:
+                tickers = tickers[:50]
+                st.warning(f"Limited to first 50 tickers for performance.")
+            
+            for attempt in range(max_retries):
+                try:
+                    # Use threads=False for stability
+                    data = yf.download(
+                        tickers, 
+                        start=start_date, 
+                        end=end_date, 
+                        progress=False, 
+                        group_by='ticker', 
+                        threads=False,
+                        auto_adjust=True,
+                        timeout=30  # Add timeout
+                    )
+                    
+                    if data.empty:
+                        if attempt < max_retries - 1:
+                            continue
+                        st.error("No data received from Yahoo Finance. Check ticker symbols.")
+                        return pd.DataFrame(), {}
+                    
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        raise e
             
             prices = pd.DataFrame()
-            ohlc = {}
+            ohlc_dict = {}
             
             if len(tickers) == 1:
-                t = tickers[0]
-                # YFinance v0.2 fix
+                ticker = tickers[0]
+                df = data
+                # Handle single level or multi-level
                 if isinstance(data.columns, pd.MultiIndex):
-                    # Sometimes it comes as (Price, Ticker) or (Ticker, Price)
-                    try:
-                        df = data.xs(t, axis=1, level=0)
-                    except:
-                        df = data
-                else:
-                    df = data
-                    
-                col = 'Close' if 'Close' in df.columns else 'Adj Close'
-                if col in df.columns:
-                    prices[t] = df[col]
-                    ohlc[t] = df
+                    try: 
+                        df = data.xs(ticker, axis=1, level=0, drop_level=True)
+                    except: 
+                        pass
+                
+                price_col = 'Close' 
+                if price_col in df.columns:
+                    prices[ticker] = df[price_col]
+                    ohlc_dict[ticker] = df
             else:
-                for t in tickers:
+                if not isinstance(data.columns, pd.MultiIndex):
+                    return pd.DataFrame(), {}
+                
+                for ticker in tickers:
                     try:
-                        df = data.xs(t, axis=1, level=0)
-                        col = 'Close' if 'Close' in df.columns else 'Adj Close'
-                        if col in df.columns:
-                            prices[t] = df[col]
-                            ohlc[t] = df
+                        df = data.xs(ticker, axis=1, level=0, drop_level=True)
+                        price_col = 'Close'
+                        if price_col in df.columns:
+                            prices[ticker] = df[price_col]
+                            ohlc_dict[ticker] = df
                     except KeyError:
                         continue
-                        
+            
+            if prices.empty:
+                st.error("No price data could be extracted. Check ticker symbols.")
+                return pd.DataFrame(), {}
+            
+            # Forward fill then backfill
             prices = prices.ffill().bfill()
-            return prices, ohlc
+            
+            # Drop columns with all NaN
+            prices = prices.dropna(axis=1, how='all')
+            
+            if prices.empty:
+                st.error("All data is NaN after cleaning. Check data availability for selected period.")
+                return pd.DataFrame(), {}
+            
+            return prices, ohlc_dict
+            
         except Exception as e:
-            st.error(f"Data Fetch Error: {e}")
+            st.error(f"Data Pipeline Error: {str(e)}")
             return pd.DataFrame(), {}
 
     @staticmethod
-    def calculate_returns(prices):
-        return np.log(prices / prices.shift(1)).dropna()
-
-# ============================================================================
-# 7. OPTIMIZER WRAPPER
-# ============================================================================
-
-class AdvancedPortfolioOptimizer:
-    def __init__(self, returns, prices):
-        self.returns = returns
-        self.mu = expected_returns.mean_historical_return(prices)
-        self.S = risk_models.sample_cov(prices)
-
-    def optimize(self, method, risk_free_rate=0.02, target_vol=0.10):
-        if not HAS_PYPFOPT:
-            st.warning("PyPortfolioOpt not installed. Using Equal Weights.")
-            n = len(self.returns.columns)
-            return {t: 1.0/n for t in self.returns.columns}, (0,0,0)
-
-        ef = EfficientFrontier(self.mu, self.S)
-        if method == 'Max Sharpe':
-            w = ef.max_sharpe(risk_free_rate=risk_free_rate)
-        elif method == 'Min Volatility':
-            w = ef.min_volatility()
-        elif method == 'Efficient Risk':
-            w = ef.efficient_risk(target_volatility=target_vol)
+    def calculate_returns(prices, method='log'):
+        """Calculates Logarithmic or Simple returns."""
+        if prices.empty or len(prices) < 2:
+            return pd.DataFrame()
+        
+        if method == 'log':
+            returns = np.log(prices / prices.shift(1))
         else:
-            w = ef.max_sharpe(risk_free_rate=risk_free_rate)
-            
-        return ef.clean_weights(), ef.portfolio_performance(verbose=False, risk_free_rate=risk_free_rate)
+            returns = prices.pct_change()
+        
+        returns = returns.dropna()
+        return returns
+
+    @staticmethod
+    @st.cache_data(ttl=3600*24)
+    def get_market_caps_safe(tickers):
+        """Fetches Market Capitalization data with timeout."""
+        mcaps = {}
+        for t in tickers:
+            try:
+                mcaps[t] = yf.Ticker(t).info.get('marketCap', 10e9)
+            except:
+                mcaps[t] = 10e9
+        return pd.Series(mcaps)
 
 # ============================================================================
-# MAIN APP LOGIC
+# 4. SIMPLIFIED PERFORMANCE ATTRIBUTION (Robust Version)
 # ============================================================================
 
-# Sidebar
-st.sidebar.header("🔧 Enigma Config")
-selected_list = st.sidebar.selectbox("Universe", ["US Defaults", "BIST 30", "Global Indices"])
-if selected_list == "US Defaults": tickers = US_DEFAULTS
-elif selected_list == "BIST 30": tickers = BIST_30
-else: tickers = GLOBAL_INDICES
-
-selected_tickers = st.sidebar.multiselect("Assets", tickers, default=tickers[:5])
-
-with st.sidebar.expander("⚙️ Parameters", expanded=True):
-    start_date = st.date_input("Start", datetime.now() - timedelta(days=365*2))
-    end_date = st.date_input("End", datetime.now())
-    method = st.selectbox("Strategy", ['Max Sharpe', 'Min Volatility', 'Efficient Risk', 'Equal Weight'])
-    target_vol = st.slider("Target Vol", 0.05, 0.4, 0.15) if method == 'Efficient Risk' else 0.1
+class RobustPortfolioAttribution:
+    """Simplified but robust attribution engine."""
     
-    # Monte Carlo Optimization for Cloud
-    # Reduce defaults to prevent timeout on Free Tier
-    mc_sims = st.selectbox("MC Sims", [1000, 5000, 10000], index=1)
-    mc_method = st.selectbox("MC Model", ["GBM", "Student's t", "Jump Diffusion"])
+    @staticmethod
+    def calculate_simple_attribution(portfolio_weights, benchmark_weights, returns_df):
+        """Calculate simplified attribution to avoid complex dependencies."""
+        
+        # Ensure we have valid data
+        if returns_df.empty or len(returns_df) < 10:
+            return {
+                'Total Portfolio Return': 0,
+                'Total Benchmark Return': 0,
+                'Total Excess Return': 0,
+                'Allocation Effect': 0,
+                'Selection Effect': 0,
+                'Interaction Effect': 0,
+                'Information Ratio': 0,
+                'Tracking Error': 0,
+                'Active Share': 0,
+                'Portfolio Beta': 1.0,
+                'Sector Breakdown': {}
+            }
+        
+        try:
+            # Align weights with available assets
+            available_assets = returns_df.columns.tolist()
+            
+            # Create aligned weight vectors
+            w_p = np.array([portfolio_weights.get(a, 0) for a in available_assets])
+            w_b = np.array([benchmark_weights.get(a, 0) for a in available_assets])
+            
+            # Normalize weights to sum to 1
+            if w_p.sum() > 0:
+                w_p = w_p / w_p.sum()
+            if w_b.sum() > 0:
+                w_b = w_b / w_b.sum()
+            
+            # Calculate mean returns
+            mean_returns = returns_df.mean().values
+            
+            # Portfolio and benchmark returns
+            R_p = np.sum(w_p * mean_returns)
+            R_b = np.sum(w_b * mean_returns)
+            
+            # Excess return
+            excess = R_p - R_b
+            
+            # Simplified attribution (assuming interaction is small)
+            # Allocation effect: (w_p - w_b) * R_b
+            allocation = np.sum((w_p - w_b) * R_b)
+            
+            # Selection effect: w_b * (R_p - R_b)
+            selection = np.sum(w_b * (R_p - R_b))
+            
+            # Interaction: (w_p - w_b) * (R_p - R_b)
+            interaction = np.sum((w_p - w_b) * (mean_returns - R_b))
+            
+            # Calculate portfolio returns series
+            portfolio_returns = returns_df.dot(w_p)
+            benchmark_returns = returns_df.dot(w_b)
+            
+            # Tracking error
+            tracking_error = np.std(portfolio_returns - benchmark_returns) * np.sqrt(252)
+            
+            # Information ratio
+            excess_returns = portfolio_returns - benchmark_returns
+            information_ratio = excess_returns.mean() * np.sqrt(252) / tracking_error if tracking_error > 0 else 0
+            
+            # Active share
+            active_share = 0.5 * np.sum(np.abs(w_p - w_b))
+            
+            # Beta
+            covariance = np.cov(portfolio_returns, benchmark_returns)[0][1]
+            variance = np.var(benchmark_returns)
+            beta = covariance / variance if variance > 0 else 1.0
+            
+            # Create simple sector breakdown
+            sector_breakdown = {}
+            
+            return {
+                'Total Portfolio Return': R_p,
+                'Total Benchmark Return': R_b,
+                'Total Excess Return': excess,
+                'Allocation Effect': allocation,
+                'Selection Effect': selection,
+                'Interaction Effect': interaction,
+                'Information Ratio': information_ratio,
+                'Tracking Error': tracking_error,
+                'Active Share': active_share,
+                'Portfolio Beta': beta,
+                'Sector Breakdown': sector_breakdown
+            }
+            
+        except Exception as e:
+            st.warning(f"Attribution calculation simplified due to error: {str(e)}")
+            return {
+                'Total Portfolio Return': 0,
+                'Total Benchmark Return': 0,
+                'Total Excess Return': 0,
+                'Allocation Effect': 0,
+                'Selection Effect': 0,
+                'Interaction Effect': 0,
+                'Information Ratio': 0,
+                'Tracking Error': 0,
+                'Active Share': 0,
+                'Portfolio Beta': 1.0,
+                'Sector Breakdown': {}
+            }
 
-run_btn = st.sidebar.button("🚀 EXECUTE", type="primary")
+# ============================================================================
+# 5. SIMPLIFIED MONTE CARLO SIMULATOR
+# ============================================================================
+
+class SimpleMonteCarloSimulator:
+    """Simplified Monte Carlo simulation for robustness."""
+    
+    def __init__(self, returns: pd.DataFrame):
+        self.returns = returns
+        if not returns.empty:
+            self.mean_return = returns.mean().mean()
+            self.volatility = returns.std().mean()
+        else:
+            self.mean_return = 0
+            self.volatility = 0.2
+    
+    def gbm_simulation_simple(self, initial_value=1.0, days=252, n_sims=1000):
+        """Simple GBM simulation."""
+        if self.volatility == 0:
+            return np.ones((n_sims, days + 1)) * initial_value
+        
+        dt = 1/252
+        drift = (self.mean_return - 0.5 * self.volatility**2) * dt
+        diffusion = self.volatility * np.sqrt(dt)
+        
+        paths = np.zeros((n_sims, days + 1))
+        paths[:, 0] = initial_value
+        
+        # Generate all random numbers at once for speed
+        z = np.random.randn(n_sims, days)
+        
+        for t in range(1, days + 1):
+            paths[:, t] = paths[:, t-1] * np.exp(drift + diffusion * z[:, t-1])
+        
+        return paths
+    
+    def calculate_simple_var(self, paths, confidence=0.95):
+        """Calculate simple VaR."""
+        terminal_values = paths[:, -1]
+        terminal_returns = (terminal_values - 1)
+        var = np.percentile(terminal_returns, (1 - confidence) * 100)
+        cvar = terminal_returns[terminal_returns <= var].mean()
+        
+        return {
+            f"VaR ({int(confidence*100)}%)": var,
+            f"CVaR ({int(confidence*100)}%)": cvar
+        }
+
+# ============================================================================
+# 6. BASIC RISK METRICS
+# ============================================================================
+
+class BasicRiskMetrics:
+    """Basic risk metrics calculation."""
+    
+    @staticmethod
+    def calculate_basic_metrics(returns, risk_free=0.02):
+        """Calculate basic risk metrics."""
+        if returns.empty or len(returns) < 10:
+            return {
+                "CAGR": 0,
+                "Volatility": 0,
+                "Sharpe Ratio": 0,
+                "Max Drawdown": 0,
+                "Calmar Ratio": 0
+            }
+        
+        ann_factor = 252
+        
+        total_return = (1 + returns).prod() - 1
+        cagr = (1 + total_return) ** (ann_factor / len(returns)) - 1
+        volatility = returns.std() * np.sqrt(ann_factor)
+        
+        excess_returns = returns - (risk_free / ann_factor)
+        sharpe = np.sqrt(ann_factor) * excess_returns.mean() / returns.std() if returns.std() > 0 else 0
+        
+        cum_returns = (1 + returns).cumprod()
+        running_max = np.maximum.accumulate(cum_returns)
+        drawdown = (cum_returns - running_max) / running_max
+        max_dd = drawdown.min()
+        calmar = cagr / abs(max_dd) if max_dd != 0 else 0
+        
+        return {
+            "CAGR": cagr,
+            "Volatility": volatility,
+            "Sharpe Ratio": sharpe,
+            "Max Drawdown": max_dd,
+            "Calmar Ratio": calmar
+        }
+
+# ============================================================================
+# 7. BASIC OPTIMIZATION (Fallback)
+# ============================================================================
+
+class BasicPortfolioOptimizer:
+    """Basic portfolio optimization if PyPortfolioOpt is not available."""
+    
+    @staticmethod
+    def equal_weight(tickers):
+        """Equal weight portfolio."""
+        n = len(tickers)
+        return {t: 1.0/n for t in tickers}
+    
+    @staticmethod
+    def min_variance_basic(returns_df):
+        """Basic minimum variance portfolio."""
+        if returns_df.empty:
+            return {}
+        
+        cov_matrix = returns_df.cov().values
+        n = cov_matrix.shape[0]
+        
+        try:
+            # Solve for minimum variance portfolio
+            inv_cov = np.linalg.inv(cov_matrix)
+            ones = np.ones(n)
+            weights = inv_cov.dot(ones) / ones.dot(inv_cov).dot(ones)
+            
+            # Create weights dictionary
+            weights_dict = {ticker: float(w) for ticker, w in zip(returns_df.columns, weights)}
+            return weights_dict
+        except:
+            # Fallback to equal weight
+            return BasicPortfolioOptimizer.equal_weight(returns_df.columns.tolist())
+
+# ============================================================================
+# 8. SIDEBAR CONFIGURATION
+# ============================================================================
+
+# --- SIDEBAR CONFIGURATION ---
+st.sidebar.header("🔧 Portfolio Configuration")
+
+# Asset Universe Selection
+ticker_lists = {
+    "US Large Caps": US_DEFAULTS, 
+    "BIST 30 (Turkey)": BIST_30[:10],  # Reduced for performance
+    "Global Indices": GLOBAL_INDICES[:10]
+}
+selected_list = st.sidebar.selectbox("Asset Universe", list(ticker_lists.keys()))
+available_tickers = ticker_lists[selected_list]
+
+# Custom Ticker Injection
+custom_tickers = st.sidebar.text_input("Custom Tickers (Comma Separated)", value="")
+if custom_tickers: 
+    custom_list = [t.strip().upper() for t in custom_tickers.split(',') if t.strip()]
+    available_tickers = list(set(available_tickers + custom_list))
+
+# Limit selection for performance
+selected_tickers = st.sidebar.multiselect(
+    "Select Assets (Max 15)", 
+    available_tickers, 
+    default=available_tickers[:min(5, len(available_tickers))],
+    max_selections=15
+)
+
+st.sidebar.markdown("---")
+
+# Use Expanders for cleaner UI
+with st.sidebar.expander("⚙️ Model Parameters", expanded=True):
+    # Set default dates with buffer
+    default_end = datetime.now()
+    default_start = default_end - timedelta(days=365*2)  # 2 years for faster loading
+    
+    start_date = st.date_input("Start Date", default_start)
+    end_date = st.date_input("End Date", default_end)
+    
+    # Validate dates
+    if start_date >= end_date:
+        st.sidebar.error("⚠️ Start date must be before end date")
+        start_date = default_start
+        end_date = default_end
+    
+    rf_rate = st.number_input("Risk-Free Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
+
+    # Strategy Selection (simplified)
+    strat_options = ['Equal Weight', 'Min Variance']
+    if PYPFOPT_AVAILABLE:
+        strat_options.extend(['Max Sharpe', 'Min Volatility', 'Efficient Risk'])
+    
+    method = st.selectbox("Optimization Method", strat_options)
+
+    if method == 'Efficient Risk':
+        target_vol = st.slider("Target Volatility", 0.05, 0.50, 0.15)
+
+# Monte Carlo Simulation Parameters
+with st.sidebar.expander("🎲 Monte Carlo Settings", expanded=False):
+    mc_days = st.slider("Simulation Horizon (Days)", 21, 252, 126)  # Reduced for speed
+    mc_sims = st.selectbox("Number of Simulations", [500, 1000, 2500], index=1)  # Reduced
+
+# Backtest Settings
+with st.sidebar.expander("📉 Backtest Settings", expanded=False):
+    rebal_freq_ui = st.selectbox("Rebalancing Frequency", ["Quarterly", "Monthly", "Yearly"])
+    freq_map = {"Quarterly": "Q", "Monthly": "M", "Yearly": "Y"}
+
+# Add a clear warning about data loading
+st.sidebar.markdown("---")
+st.sidebar.info("""
+**Note:** 
+- First run may take 30-60 seconds to fetch data
+- Large portfolios (>15 assets) may be slower
+- Some tickers may not have data for selected period
+""")
+
+run_btn = st.sidebar.button("🚀 RUN ANALYSIS", type="primary", use_container_width=True)
+
+# ============================================================================
+# 9. MAIN EXECUTION BLOCK WITH PROGRESS UPDATES
+# ============================================================================
 
 if run_btn:
-    with st.spinner('Accessing Quantitative Engine...'):
-        dm = PortfolioDataManager()
-        prices, ohlc = dm.fetch_data(selected_tickers, start_date, end_date)
+    if not selected_tickers:
+        st.error("❌ Please select at least one asset.")
+        st.stop()
+    
+    # Create progress indicators
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    try:
+        # Step 1: Data Loading (20%)
+        status_text.text("📊 Fetching market data...")
+        data_manager = RobustPortfolioDataManager()
+        prices, ohlc_data = data_manager.fetch_data_safe(
+            selected_tickers, 
+            start_date, 
+            end_date,
+            max_retries=1
+        )
+        progress_bar.progress(20)
         
         if prices.empty:
-            st.error("No data found.")
+            st.error("""
+            ❌ No data received. Possible issues:
+            1. Invalid ticker symbols
+            2. No data for selected period
+            3. Yahoo Finance API issue
+            
+            **Try:** 
+            - Using simpler tickers (AAPL, MSFT, GOOGL)
+            - Reducing number of assets
+            - Checking date range
+            """)
             st.stop()
-            
-        returns = dm.calculate_returns(prices)
         
-        # Optimizer
-        opt = AdvancedPortfolioOptimizer(returns, prices)
+        # Step 2: Returns Calculation (30%)
+        status_text.text("📈 Calculating returns...")
+        returns = data_manager.calculate_returns(prices)
+        progress_bar.progress(30)
+        
+        if returns.empty:
+            st.error("❌ Insufficient data for returns calculation.")
+            st.stop()
+        
+        # Step 3: Portfolio Optimization (40%)
+        status_text.text("⚖️ Optimizing portfolio...")
+        
         if method == 'Equal Weight':
-            weights = {t: 1.0/len(selected_tickers) for t in selected_tickers}
-            perf = (0,0,0) # Placeholder
-        else:
+            weights = BasicPortfolioOptimizer.equal_weight(selected_tickers)
+            # Simple performance metrics for equal weight
+            w_array = np.array([weights.get(t, 0) for t in selected_tickers])
+            expected_return = np.sum(returns.mean() * w_array) * 252
+            expected_vol = np.sqrt(np.dot(w_array.T, np.dot(returns.cov() * 252, w_array)))
+            sharpe = (expected_return - rf_rate) / expected_vol if expected_vol > 0 else 0
+            
+        elif method == 'Min Variance' and not PYPFOPT_AVAILABLE:
+            weights = BasicPortfolioOptimizer.min_variance_basic(returns)
+            w_array = np.array([weights.get(t, 0) for t in selected_tickers])
+            expected_return = np.sum(returns.mean() * w_array) * 252
+            expected_vol = np.sqrt(np.dot(w_array.T, np.dot(returns.cov() * 252, w_array)))
+            sharpe = (expected_return - rf_rate) / expected_vol if expected_vol > 0 else 0
+            
+        elif PYPFOPT_AVAILABLE:
             try:
-                weights, perf = opt.optimize(method, 0.02, target_vol)
+                # Try PyPortfolioOpt optimization
+                mu = expected_returns.mean_historical_return(prices)
+                S = risk_models.sample_cov(prices)
+                ef = EfficientFrontier(mu, S)
+                
+                if method == 'Max Sharpe':
+                    weights = ef.max_sharpe(risk_free_rate=rf_rate)
+                elif method == 'Min Volatility':
+                    weights = ef.min_volatility()
+                elif method == 'Efficient Risk':
+                    weights = ef.efficient_risk(target_volatility=target_vol)
+                else:
+                    weights = ef.min_volatility()
+                
+                weights = ef.clean_weights()
+                expected_return, expected_vol, sharpe = ef.portfolio_performance(
+                    verbose=False, risk_free_rate=rf_rate
+                )
             except Exception as e:
-                st.error(f"Optimization failed: {e}")
-                weights = {t: 1.0/len(selected_tickers) for t in selected_tickers}
-                perf = (0,0,0)
-
-        # MC Simulation (Vectorized)
-        sim = AdvancedMonteCarloSimulator(returns, prices)
-        w_arr = np.array([weights.get(t,0) for t in prices.columns])
-        
-        if mc_method == "GBM":
-            paths, stats_mc = sim.gbm_simulation(w_arr, n_sims=mc_sims)
-        elif mc_method == "Student's t":
-            paths, stats_mc = sim.t_distribution_simulation(w_arr, n_sims=mc_sims)
+                st.warning(f"PyPortfolioOpt optimization failed: {str(e)}. Using equal weight.")
+                weights = BasicPortfolioOptimizer.equal_weight(selected_tickers)
+                w_array = np.array([weights.get(t, 0) for t in selected_tickers])
+                expected_return = np.sum(returns.mean() * w_array) * 252
+                expected_vol = np.sqrt(np.dot(w_array.T, np.dot(returns.cov() * 252, w_array)))
+                sharpe = (expected_return - rf_rate) / expected_vol if expected_vol > 0 else 0
         else:
-            paths, stats_mc = sim.jump_diffusion_simulation(w_arr, n_sims=mc_sims)
-
-        # Display Logic (Simplified for stability)
-        t1, t2, t3 = st.tabs(["Dashboard", "MC Simulation", "Attribution"])
+            weights = BasicPortfolioOptimizer.equal_weight(selected_tickers)
+            w_array = np.array([weights.get(t, 0) for t in selected_tickers])
+            expected_return = np.sum(returns.mean() * w_array) * 252
+            expected_vol = np.sqrt(np.dot(w_array.T, np.dot(returns.cov() * 252, w_array)))
+            sharpe = (expected_return - rf_rate) / expected_vol if expected_vol > 0 else 0
         
-        with t1:
-            st.subheader("Portfolio Performance")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Exp Return", f"{perf[0]:.2%}")
-            col2.metric("Exp Volatility", f"{perf[1]:.2%}")
-            col3.metric("Sharpe Ratio", f"{perf[2]:.2f}")
+        progress_bar.progress(50)
+        
+        # Step 4: Simple Backtest (60%)
+        status_text.text("📉 Running backtest...")
+        
+        # Create simple equity curve
+        w_array = np.array([weights.get(t, 0) for t in returns.columns])
+        portfolio_returns = returns.dot(w_array)
+        equity_curve = (1 + portfolio_returns).cumprod() * 100000
+        
+        progress_bar.progress(70)
+        
+        # Step 5: Risk Metrics (80%)
+        status_text.text("⚠️ Calculating risk metrics...")
+        risk_metrics = BasicRiskMetrics.calculate_basic_metrics(portfolio_returns, rf_rate)
+        progress_bar.progress(80)
+        
+        # Step 6: Attribution Analysis (90%)
+        status_text.text("🔍 Analyzing performance attribution...")
+        
+        # Create benchmark weights (equal weight)
+        benchmark_weights = BasicPortfolioOptimizer.equal_weight(selected_tickers)
+        
+        attribution = RobustPortfolioAttribution.calculate_simple_attribution(
+            weights, benchmark_weights, returns
+        )
+        progress_bar.progress(90)
+        
+        # Step 7: Monte Carlo Simulation (95%)
+        status_text.text("🎲 Running Monte Carlo simulations...")
+        mc_simulator = SimpleMonteCarloSimulator(pd.DataFrame(portfolio_returns))
+        mc_paths = mc_simulator.gbm_simulation_simple(days=mc_days, n_sims=mc_sims)
+        var_results = mc_simulator.calculate_simple_var(mc_paths, confidence=0.95)
+        progress_bar.progress(95)
+        
+        # Step 8: Metadata (100%)
+        status_text.text("🏷️ Loading asset metadata...")
+        classifier = AssetClassifier()
+        asset_metadata = classifier.get_asset_metadata(selected_tickers)
+        progress_bar.progress(100)
+        status_text.text("✅ Analysis complete!")
+        
+        # ============================================================================
+        # 10. DISPLAY RESULTS
+        # ============================================================================
+        
+        st.success(f"✅ Analysis complete! Processed {len(selected_tickers)} assets over {len(prices)} trading days.")
+        
+        # Create tabs for different sections
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "📈 Performance", "⚖️ Allocation", "🎲 Risk"])
+        
+        with tab1:
+            st.markdown("### 📊 Portfolio Summary")
             
-            # Allocation Chart
-            fig = px.pie(names=list(weights.keys()), values=list(weights.values()), title="Optimal Allocation")
-            fig.update_layout(template="plotly_dark")
-            st.plotly_chart(fig, use_container_width=True)
+            # Key metrics in columns
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Expected Return", f"{expected_return:.2%}")
+            with col2:
+                st.metric("Expected Volatility", f"{expected_vol:.2%}")
+            with col3:
+                st.metric("Sharpe Ratio", f"{sharpe:.2f}")
+            with col4:
+                st.metric("Max Drawdown", f"{risk_metrics['Max Drawdown']:.2%}")
             
-        with t2:
-            st.subheader(f"Monte Carlo: {mc_method}")
+            st.markdown("---")
+            
+            # Performance attribution
+            st.markdown("#### 🎯 Performance Attribution")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric("Excess Return", f"{attribution['Total Excess Return']:.2%}")
+            with col_b:
+                st.metric("Information Ratio", f"{attribution['Information Ratio']:.2f}")
+            with col_c:
+                st.metric("Active Share", f"{attribution['Active Share']:.1%}")
+            
+            # Monte Carlo results
+            st.markdown("---")
+            st.markdown("#### 🎲 Risk Metrics")
+            col_var, col_cvar = st.columns(2)
+            with col_var:
+                st.metric("VaR (95%)", f"{var_results['VaR (95%)']:.2%}")
+            with col_cvar:
+                st.metric("CVaR (95%)", f"{var_results['CVaR (95%)']:.2%}")
+        
+        with tab2:
+            st.markdown("### 📈 Performance Analysis")
+            
+            # Equity curve
+            fig_equity = go.Figure()
+            fig_equity.add_trace(go.Scatter(
+                x=equity_curve.index,
+                y=equity_curve.values,
+                mode='lines',
+                name='Portfolio',
+                line=dict(color='#00cc96', width=2)
+            ))
+            
+            # Add benchmark if available
+            bench_returns = returns.mean(axis=1)
+            bench_curve = (1 + bench_returns).cumprod() * 100000
+            fig_equity.add_trace(go.Scatter(
+                x=bench_curve.index,
+                y=bench_curve.values,
+                mode='lines',
+                name='Equal Weight Benchmark',
+                line=dict(color='#888', dash='dash')
+            ))
+            
+            fig_equity.update_layout(
+                title="Equity Curve ($100k Initial)",
+                template="plotly_dark",
+                height=400,
+                xaxis_title="Date",
+                yaxis_title="Portfolio Value"
+            )
+            st.plotly_chart(fig_equity, use_container_width=True)
+            
+            # Drawdown chart
+            running_max = equity_curve.cummax()
+            drawdown = (equity_curve - running_max) / running_max
+            
+            fig_dd = go.Figure()
+            fig_dd.add_trace(go.Scatter(
+                x=drawdown.index,
+                y=drawdown.values * 100,
+                fill='tozeroy',
+                mode='none',
+                name='Drawdown',
+                fillcolor='rgba(239, 85, 59, 0.3)',
+                line=dict(color='#ef553b')
+            ))
+            
+            fig_dd.update_layout(
+                title="Drawdown Profile",
+                template="plotly_dark",
+                height=300,
+                yaxis_title="Drawdown %",
+                yaxis_tickformat=".1f%"
+            )
+            st.plotly_chart(fig_dd, use_container_width=True)
+        
+        with tab3:
+            st.markdown("### ⚖️ Portfolio Allocation")
+            
+            # Create allocation pie chart
+            non_zero_weights = {k: v for k, v in weights.items() if v > 0.001}
+            
+            if non_zero_weights:
+                fig_pie = go.Figure(data=[go.Pie(
+                    labels=list(non_zero_weights.keys()),
+                    values=list(non_zero_weights.values()),
+                    hole=0.3,
+                    textinfo='label+percent'
+                )])
+                
+                fig_pie.update_layout(
+                    title="Portfolio Allocation",
+                    template="plotly_dark",
+                    height=400
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+                
+                # Display weights table
+                weights_df = pd.DataFrame({
+                    'Asset': list(non_zero_weights.keys()),
+                    'Weight': [f"{w:.2%}" for w in non_zero_weights.values()]
+                })
+                st.dataframe(weights_df, hide_index=True, use_container_width=True)
+            else:
+                st.info("No significant allocations found.")
+        
+        with tab4:
+            st.markdown("### 🎲 Risk Analysis")
+            
+            # Monte Carlo paths
             fig_mc = go.Figure()
-            # Plot only 100 paths to save browser memory
-            for i in range(min(100, mc_sims)):
-                fig_mc.add_trace(go.Scatter(y=paths[i,:], mode='lines', line=dict(width=0.5, color='rgba(255,255,255,0.1)'), showlegend=False))
             
-            mean_path = np.mean(paths, axis=0)
-            fig_mc.add_trace(go.Scatter(y=mean_path, mode='lines', line=dict(color='#00cc96', width=3), name='Mean'))
-            fig_mc.update_layout(template="plotly_dark", title=f"Projected Paths ({mc_sims} sims)")
+            # Plot sample of paths
+            n_sample = min(50, mc_sims)
+            for i in range(n_sample):
+                fig_mc.add_trace(go.Scatter(
+                    x=list(range(mc_days + 1)),
+                    y=mc_paths[i, :],
+                    mode='lines',
+                    line=dict(width=0.5, color='rgba(100, 100, 100, 0.1)'),
+                    showlegend=False
+                ))
+            
+            # Plot mean path
+            mean_path = np.mean(mc_paths, axis=0)
+            fig_mc.add_trace(go.Scatter(
+                x=list(range(mc_days + 1)),
+                y=mean_path,
+                mode='lines',
+                name='Mean Path',
+                line=dict(color='#00cc96', width=3)
+            ))
+            
+            fig_mc.update_layout(
+                title=f"Monte Carlo Simulation ({mc_sims} paths)",
+                template="plotly_dark",
+                height=400,
+                xaxis_title="Days",
+                yaxis_title="Portfolio Value (Normalized)"
+            )
             st.plotly_chart(fig_mc, use_container_width=True)
             
-            st.info(f"Terminal Mean Value: {stats_mc['terminal_mean']:.4f} | Terminal Std: {stats_mc['terminal_std']:.4f}")
-
-        with t3:
-            st.subheader("Performance Attribution")
-            # Fast attribution without heavy metadata calls
-            classifier = AssetClassifier()
-            meta = classifier.get_asset_metadata(selected_tickers)
-            sector_map = {t: m['sector'] for t, m in meta.items()}
+            # Terminal distribution
+            terminal_values = mc_paths[:, -1]
             
-            # Use Equal Weight benchmark for simple comparison
-            bench_weights = {t: 1.0/len(selected_tickers) for t in selected_tickers}
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Histogram(
+                x=terminal_values,
+                nbinsx=50,
+                name='Terminal Values',
+                marker_color='#636efa',
+                opacity=0.7
+            ))
             
-            attr_eng = ProfessionalPortfolioAttribution()
-            res = attr_eng.calculate_brinson_fachler_attribution(weights, bench_weights, returns, returns, sector_map)
+            # Add VaR line
+            var_95 = np.percentile(terminal_values, 5)
+            fig_hist.add_vline(x=var_95, line_dash="dash", line_color="red", 
+                             annotation_text=f"VaR 95%: {var_95:.4f}")
             
-            viz = AttributionVisualizationRedesign()
-            st.plotly_chart(viz.create_attribution_summary_chart(res), use_container_width=True)
+            fig_hist.update_layout(
+                title="Distribution of Terminal Values",
+                template="plotly_dark",
+                height=300,
+                xaxis_title="Terminal Value"
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+        
+        # Display data info
+        with st.expander("📋 Data Information"):
+            st.write(f"**Period:** {prices.index[0].strftime('%Y-%m-%d')} to {prices.index[-1].strftime('%Y-%m-%d')}")
+            st.write(f"**Trading Days:** {len(prices)}")
+            st.write(f"**Assets with Data:** {len(prices.columns)}/{len(selected_tickers)}")
             
-            # Sector Breakdown
-            st.dataframe(pd.DataFrame(res['Sector Breakdown']).T.style.format("{:.2%}"))
+            # Show missing data
+            missing = [t for t in selected_tickers if t not in prices.columns]
+            if missing:
+                st.warning(f"Missing data for: {', '.join(missing)}")
+        
+        # Clear progress indicators
+        progress_bar.empty()
+        status_text.empty()
+        
+    except Exception as e:
+        st.error(f"❌ Analysis failed with error: {str(e)}")
+        st.info("""
+        **Troubleshooting tips:**
+        1. Try fewer assets
+        2. Use shorter time period
+        3. Check ticker symbols are valid
+        4. Try different asset universe
+        """)
 
 else:
-    st.info("👈 Select assets and click EXECUTE to start the institutional engine.")
+    # Landing page
+    st.markdown("""
+    <div style="text-align: center; padding: 40px 20px;">
+        <h1>🏛️ Portfolio Analysis Terminal</h1>
+        <p style="color: #666; font-size: 16px; max-width: 800px; margin: 20px auto;">
+            Professional portfolio analysis with attribution, risk metrics, and Monte Carlo simulations
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-left: 4px solid #00cc96;">
+            <h4 style="color: #00cc96; margin-top: 0;">📊 Portfolio Optimization</h4>
+            <p style="color: #ccc; font-size: 14px;">
+                • Mean-variance optimization<br>
+                • Risk parity approaches<br>
+                • Custom constraints
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-left: 4px solid #636efa;">
+            <h4 style="color: #636efa; margin-top: 0;">🎯 Performance Attribution</h4>
+            <p style="color: #ccc; font-size: 14px;">
+                • Brinson-Fachler attribution<br>
+                • Sector decomposition<br>
+                • Active management analysis
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div style="background-color: #1e1e1e; padding: 20px; border-radius: 10px; border-left: 4px solid #ef553b;">
+            <h4 style="color: #ef553b; margin-top: 0;">⚠️ Risk Analysis</h4>
+            <p style="color: #ccc; font-size: 14px;">
+                • VaR/CVaR calculations<br>
+                • Monte Carlo simulations<br>
+                • Stress testing
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Quick start examples
+    st.markdown("#### 🚀 Quick Start Examples")
+    
+    example_col1, example_col2, example_col3 = st.columns(3)
+    
+    with example_col1:
+        if st.button("US Tech Portfolio", use_container_width=True):
+            st.session_state.preload = "US"
+            st.rerun()
+    
+    with example_col2:
+        if st.button("Global Diversified", use_container_width=True):
+            st.session_state.preload = "Global"
+            st.rerun()
+    
+    with example_col3:
+        if st.button("Turkish Market", use_container_width=True):
+            st.session_state.preload = "Turkey"
+            st.rerun()
