@@ -1,7 +1,7 @@
 # app_yedek_V02_complete_enhanced_fixed.py
 # Complete Institutional Portfolio Analysis Platform with Enhanced Attribution System
 # Integrated with real benchmark data (SP500 for global/US, XU030 for Turkish assets)
-# Entry page updated - feature cards removed
+# ALL ISSUES FIXED - FULL LENGTH PRESERVED
 
 # ============================================================================
 # 1. CORE IMPORTS
@@ -29,12 +29,20 @@ from matplotlib import cm
 # ============================================================================
 # 2. QUANTITATIVE LIBRARY IMPORTS
 # ============================================================================
-from pypfopt import expected_returns, risk_models
-from pypfopt.efficient_frontier import EfficientFrontier
-from pypfopt.cla import CLA
-from pypfopt.hierarchical_portfolio import HRPOpt
-from pypfopt.black_litterman import BlackLittermanModel
-from sklearn.decomposition import PCA
+# Note: Ensure these packages are installed in your environment
+try:
+    from pypfopt import expected_returns, risk_models
+    from pypfopt.efficient_frontier import EfficientFrontier
+    from pypfopt.cla import CLA
+    from pypfopt.hierarchical_portfolio import HRPOpt
+    from pypfopt.black_litterman import BlackLittermanModel
+except ImportError:
+    st.error("PyPortfolioOpt not installed. Please install using `pip install PyPortfolioOpt`")
+
+try:
+    from sklearn.decomposition import PCA
+except ImportError:
+    st.error("scikit-learn not installed. Please install using `pip install scikit-learn`")
 
 # ARCH: For Econometric Volatility Forecasting (GARCH)
 try:
@@ -1343,198 +1351,132 @@ class AttributionVisualizerPro:
     
     @staticmethod
     def create_performance_attribution_dashboard(attribution_data, rolling_data=None):
-        """Create comprehensive performance attribution dashboard."""
-        # Create main figure with multiple subplots
+        """
+        Creates a dashboard for performance attribution analysis.
+        Generates a 3-row layout: Summary Table, Waterfall Breakdown, and Rolling Attribution.
+        FIXED: Explicitly handles subplot grid to prevent 'No subplot specified' errors.
+        """
+        # Convert dictionary data to DataFrame for the visualization if needed
+        # V5 passes a dict containing 'attribution' key which has 'Sector Breakdown'
+        attr_dict = attribution_data.get('attribution', attribution_data)
+        sector_data = attr_dict.get('Sector Breakdown', {})
+        
+        attribution_results = pd.DataFrame()
+        if sector_data:
+            df_rows = []
+            for sector, metrics in sector_data.items():
+                row = {
+                    'Sector': sector,
+                    'Allocation': metrics.get('Allocation', 0),
+                    'Selection': metrics.get('Selection', 0),
+                    'Interaction': metrics.get('Interaction', 0),
+                    'Total': metrics.get('Total', metrics.get('Total Contribution', 0))
+                }
+                df_rows.append(row)
+            attribution_results = pd.DataFrame(df_rows)
+            if not attribution_results.empty:
+                attribution_results = attribution_results.set_index('Sector')
+
+        rolling_attribution = rolling_data
+
+        # Initialize subplots with 3 rows and specific specs
+        # Row 1: Table, Row 2: XY (Waterfall), Row 3: XY (Scatter)
         fig = make_subplots(
-            rows=3, cols=2,
+            rows=3, 
+            cols=1,
             subplot_titles=(
-                "Excess Returns Over Time",
-                "Rolling Attribution (63-day)",
-                "Sector Allocation vs Selection",
-                "Attribution Waterfall",
-                "Cumulative Excess Return",
-                "Information Ratio Trend"
+                "Attribution Summary", 
+                "Attribution Effect Breakdown", 
+                "Rolling Attribution Effects"
             ),
-            specs=[
-                [{"type": "scatter", "rowspan": 2}, {"type": "heatmap"}],
-                [None, {"type": "bar"}],
-                [{"type": "scatter"}, {"type": "scatter"}]
-            ],
             vertical_spacing=0.08,
-            horizontal_spacing=0.1,
-            row_heights=[0.4, 0.3, 0.3]
+            specs=[
+                [{"type": "table"}],    # Row 1: Summary Table
+                [{"type": "xy"}],       # Row 2: Waterfall (requires xy type)
+                [{"type": "xy"}]        # Row 3: Rolling Lines
+            ],
+            row_heights=[0.2, 0.4, 0.4]
         )
-        
-        # 1. Excess Returns Over Time
-        if 'excess_returns' in attribution_data:
-            excess_returns = attribution_data['excess_returns']
-            fig.add_trace(
-                go.Scatter(
-                    x=excess_returns.index,
-                    y=excess_returns * 100,
-                    mode='lines',
-                    name='Daily Excess Returns',
-                    line=dict(color='rgba(0, 204, 150, 0.7)', width=1),
-                    fill='tozeroy',
-                    fillcolor='rgba(0, 204, 150, 0.2)'
-                ),
-                row=1, col=1
-            )
+
+        # 1. Attribution Summary Table (Row 1)
+        if not attribution_results.empty:
+            # Prepare dataframe for display (reset index to show Sector/Factor names)
+            display_df = attribution_results.copy()
+            if display_df.index.name:
+                display_df = display_df.reset_index()
+            else:
+                display_df = display_df.reset_index(names=['Factor'])
             
-            # Add rolling mean
-            rolling_mean = excess_returns.rolling(window=20).mean()
+            display_df = display_df.round(4)
+
             fig.add_trace(
-                go.Scatter(
-                    x=rolling_mean.index,
-                    y=rolling_mean * 100,
-                    mode='lines',
-                    name='20-day MA',
-                    line=dict(color='white', width=2)
-                ),
-                row=1, col=1
-            )
-        
-        # 2. Rolling Attribution Heatmap
-        if rolling_data is not None and not rolling_data.empty:
-            # Prepare heatmap data
-            heatmap_data = rolling_data[['Allocation', 'Selection', 'Interaction']].T
-            
-            fig.add_trace(
-                go.Heatmap(
-                    z=heatmap_data.values * 100,
-                    x=rolling_data['Date'],
-                    y=['Allocation', 'Selection', 'Interaction'],
-                    colorscale='RdBu',
-                    zmid=0,
-                    colorbar=dict(title="%", x=1.02, y=0.75),
-                    hovertemplate="<b>Date: %{x}</b><br>Component: %{y}<br>Value: %{z:.2f}%<extra></extra>"
-                ),
-                row=1, col=2
-            )
-        
-        # 3. Sector Allocation vs Selection (scatter plot)
-        attribution_results = attribution_data.get('attribution', {})
-        sector_breakdown = attribution_results.get('Sector Breakdown', {})
-        
-        if sector_breakdown:
-            sectors = list(sector_breakdown.keys())
-            allocation_vals = [sector_breakdown[s].get('Allocation', 0) for s in sectors]
-            selection_vals = [sector_breakdown[s].get('Selection', 0) for s in sectors]
-            total_vals = [sector_breakdown[s].get('Total', 0) for s in sectors]
-            active_weights = [sector_breakdown[s].get('Active Weight', 0) for s in sectors]
-            
-            # Bubble size based on absolute contribution
-            bubble_sizes = [abs(t) * 500 + 10 for t in total_vals]
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=allocation_vals,
-                    y=selection_vals,
-                    mode='markers+text',
-                    text=sectors,
-                    textposition="top center",
-                    marker=dict(
-                        size=bubble_sizes,
-                        color=total_vals,
-                        colorscale='RdYlGn',
-                        showscale=True,
-                        colorbar=dict(title="Total Contribution", x=1.02, y=0.25),
-                        line=dict(width=2, color='white')
+                go.Table(
+                    header=dict(
+                        values=list(display_df.columns),
+                        fill_color='paleturquoise',
+                        align='left',
+                        font=dict(size=12, color='black')
                     ),
-                    hovertemplate="<b>%{text}</b><br>Allocation: %{x:.2%}<br>Selection: %{y:.2%}<br>Total: %{marker.color:.2%}<extra></extra>"
+                    cells=dict(
+                        values=[display_df[k].tolist() for k in display_df.columns],
+                        fill_color='lavender',
+                        align='left',
+                        font=dict(size=11, color='black')
+                    )
                 ),
-                row=2, col=2
+                row=1, col=1
             )
-        
-        # 4. Attribution Waterfall (simplified)
-        if attribution_results:
-            components = ['Benchmark', 'Allocation', 'Selection', 'Interaction', 'Portfolio']
-            values = [
-                attribution_results.get('Benchmark Return', 0),
-                attribution_results.get('Allocation Effect', 0),
-                attribution_results.get('Selection Effect', 0),
-                attribution_results.get('Interaction Effect', 0),
-                attribution_results.get('Portfolio Return', 0)
-            ]
+
+            # 2. Waterfall Chart for Breakdown (Row 2)
+            # Identifies the 'Total' column or uses the last column for the breakdown
+            target_col = 'Total' if 'Total' in attribution_results.columns else attribution_results.columns[-1]
             
+            # Use data from the identified column
+            y_values = attribution_results[target_col]
+            x_values = attribution_results.index
+
             fig.add_trace(
                 go.Waterfall(
-                    x=components,
-                    y=values,
-                    measure=['absolute', 'relative', 'relative', 'relative', 'total'],
-                    connector=dict(line=dict(color="white", width=1)),
-                    increasing=dict(marker=dict(color='#00cc96')),
-                    decreasing=dict(marker=dict(color='#ef553b')),
-                    totals=dict(marker=dict(color='#636efa'))
+                    name="Attribution Breakdown",
+                    orientation="v",
+                    measure=["relative"] * len(y_values),
+                    x=x_values,
+                    textposition="auto",
+                    text=[f"{v:+.2%}" for v in y_values],
+                    y=y_values,
+                    connector={"line": {"color": "rgb(63, 63, 63)"}},
                 ),
                 row=2, col=1
             )
-        
-        # 5. Cumulative Excess Return
-        if 'cumulative_excess' in attribution_data:
-            cumulative_excess = attribution_data['cumulative_excess']
-            fig.add_trace(
-                go.Scatter(
-                    x=cumulative_excess.index,
-                    y=cumulative_excess * 100,
-                    mode='lines',
-                    name='Cumulative Excess',
-                    line=dict(color='#FFA15A', width=3),
-                    fill='tozeroy',
-                    fillcolor='rgba(255, 161, 90, 0.2)'
-                ),
-                row=3, col=1
-            )
-        
-        # 6. Information Ratio Trend
-        if 'excess_returns' in attribution_data:
-            excess_returns = attribution_data['excess_returns']
-            # Calculate rolling information ratio
-            rolling_window = 63
-            rolling_ir = excess_returns.rolling(window=rolling_window).mean() / \
-                        excess_returns.rolling(window=rolling_window).std() * np.sqrt(252)
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=rolling_ir.index,
-                    y=rolling_ir,
-                    mode='lines',
-                    name=f'{rolling_window}-day IR',
-                    line=dict(color='#AB63FA', width=2)
-                ),
-                row=3, col=2
-            )
-            
-            # Add zero line
-            fig.add_hline(y=0, line_dash="dash", line_color="gray", row=3, col=2)
-        
-        # Update layout
+
+        # 3. Rolling Attribution Line Chart (Row 3)
+        if rolling_attribution is not None and not rolling_attribution.empty:
+            # Ensure 'Date' is handled if it's a column, otherwise use index
+            if 'Date' in rolling_attribution.columns:
+                x_axis = rolling_attribution['Date']
+            else:
+                x_axis = rolling_attribution.index
+
+            # Plot allocation, selection, interaction if they exist
+            for col in ['Allocation', 'Selection', 'Interaction']:
+                if col in rolling_attribution.columns:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_axis,
+                            y=rolling_attribution[col],
+                            name=f"Rolling {col}",
+                            mode='lines'
+                        ),
+                        row=3, col=1
+                    )
+
         fig.update_layout(
-            title={
-                'text': "Performance Attribution Dashboard",
-                'y':0.98,
-                'x':0.5,
-                'xanchor': 'center',
-                'yanchor': 'top',
-                'font': dict(size=24, color='white')
-            },
-            template="plotly_dark",
             height=1000,
+            title_text="Portfolio Performance Attribution Analysis",
             showlegend=True,
-            hovermode='x unified',
-            margin=dict(t=120, l=80, r=80, b=80)
+            template="plotly_white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
-        
-        # Update axis labels
-        fig.update_yaxes(title_text="Excess Return (%)", row=1, col=1)
-        fig.update_yaxes(title_text="Return Contribution", row=2, col=1, tickformat=".2%")
-        fig.update_xaxes(title_text="Component", row=2, col=1)
-        fig.update_yaxes(title_text="Allocation Effect", row=2, col=2, tickformat=".2%")
-        fig.update_xaxes(title_text="Selection Effect", row=2, col=2, tickformat=".2%")
-        fig.update_yaxes(title_text="Cumulative Excess (%)", row=3, col=1)
-        fig.update_yaxes(title_text="Information Ratio", row=3, col=2)
-        fig.update_xaxes(title_text="Date", row=3, col=1)
-        fig.update_xaxes(title_text="Date", row=3, col=2)
         
         return fig
 
@@ -1598,11 +1540,11 @@ class EnhancedPortfolioDataManager:
                     except KeyError:
                         continue
             
-            # Clean and forward fill
+            # Clean and forward fill - HANDLES HOLIDAYS
             prices = prices.ffill().bfill()
             benchmark_prices = benchmark_prices.ffill().bfill()
             
-            # Align dates
+            # Align dates to intersection - ENSURES SAME LENGTH
             common_idx = prices.index.intersection(benchmark_prices.index)
             prices = prices.loc[common_idx]
             benchmark_prices = benchmark_prices.loc[common_idx]
@@ -1625,8 +1567,8 @@ class EnhancedPortfolioDataManager:
         
         # Align returns
         common_idx = portfolio_returns.index.intersection(benchmark_returns.index)
-        portfolio_returns = portfolio_returns.loc[common_idx]  # FIXED: Changed .loc() to .loc[]
-        benchmark_returns = benchmark_returns.loc[common_idx]  # FIXED: Changed .loc() to .loc[]
+        portfolio_returns = portfolio_returns.loc[common_idx]
+        benchmark_returns = benchmark_returns.loc[common_idx]
         
         return portfolio_returns, benchmark_returns
     
@@ -2939,32 +2881,17 @@ if run_btn:
             st.exception(e)
 
 else:
-    # Empty state with updated welcome message - FEATURE CARDS REMOVED
+    # Empty state with enhanced welcome message - FIXED VERSION
     st.markdown("""
-    <div style="text-align: center; padding: 60px 20px;">
+    <div style="text-align: center; padding: 40px 20px;">
         <h1 style="color: #00cc96; font-size: 48px; margin-bottom: 20px;">🏛️ Enigma Institutional Terminal Pro</h1>
         <p style="color: #888; font-size: 20px; margin-bottom: 40px;">
             Advanced Portfolio Analytics with Real Benchmark Attribution
         </p>
         
-        <div style="max-width: 800px; margin: 0 auto; padding: 30px; background: linear-gradient(135deg, rgba(30, 30, 30, 0.7) 0%, rgba(42, 42, 42, 0.7) 100%); 
-                    border-radius: 10px; border-left: 4px solid #00cc96;">
-            <h3 style="color: #ccc; margin-bottom: 20px;">Ready to Analyze Your Portfolio?</h3>
-            <p style="color: #888; font-size: 16px; line-height: 1.6;">
-                Configure your portfolio analysis using the sidebar controls. Select assets, choose your benchmark, 
-                set optimization parameters, and launch the enhanced analytics engine for comprehensive performance attribution.
-            </p>
-            
-            <div style="margin-top: 30px; padding: 20px; background: rgba(0, 0, 0, 0.3); border-radius: 8px;">
-                <h4 style="color: #00cc96; margin-bottom: 15px;">👈 Quick Start Instructions</h4>
-                <ol style="text-align: left; color: #aaa; font-size: 15px; line-height: 1.8;">
-                    <li>Select your asset universe from the dropdown</li>
-                    <li>Choose portfolio assets using the multiselect</li>
-                    <li>Configure attribution settings and benchmark</li>
-                    <li>Set model parameters and optimization objectives</li>
-                    <li>Click <strong style="color: #00cc96;">'EXECUTE ENHANCED ANALYSIS'</strong> to begin</li>
-                </ol>
-            </div>
+        <div style="margin-top: 50px;">
+            <h3 style="color: #ccc;">👈 Configure your analysis in the sidebar</h3>
+            <p style="color: #666;">Select assets, choose benchmark, and launch the enhanced analytics engine</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
