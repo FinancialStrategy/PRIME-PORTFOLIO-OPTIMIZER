@@ -2,6 +2,7 @@
 # Complete Institutional Portfolio Analysis Platform with Enhanced Attribution System
 # Integrated with real benchmark data (SP500 for global/US, XU030 for Turkish assets)
 # ALL ISSUES FIXED - FULL LENGTH PRESERVED
+# UPDATED: Added Advanced GARCH Diagnostics & Rolling VaR/CVaR/ES Analytics
 
 # ============================================================================
 # 1. CORE IMPORTS
@@ -1745,14 +1746,35 @@ class AdvancedRiskMetrics:
         return var_profile, skew, kurt
     
     @staticmethod
+    def calculate_rolling_risk_metrics(returns, window=252, confidence_level=0.95):
+        """Calculate Rolling VaR, CVaR and Volatility."""
+        rolling_metrics = pd.DataFrame(index=returns.index)
+        
+        # Rolling Volatility (Annualized)
+        rolling_metrics['Rolling Volatility'] = returns.rolling(window).std() * np.sqrt(252)
+        
+        # Rolling VaR (Historical)
+        rolling_metrics['Rolling VaR'] = returns.rolling(window).apply(lambda x: np.percentile(x, (1-confidence_level)*100))
+        
+        # Rolling CVaR (Historical Expected Shortfall)
+        def calculate_cvar(x):
+            var_threshold = np.percentile(x, (1-confidence_level)*100)
+            return x[x <= var_threshold].mean()
+        
+        rolling_metrics['Rolling CVaR'] = returns.rolling(window).apply(calculate_cvar)
+        
+        return rolling_metrics.dropna()
+
+    @staticmethod
     def fit_garch_model(returns):
         """Fit GARCH model to returns."""
         if not HAS_ARCH:
             return None, None
         
         try:
-            # Fit GARCH(1,1) model
-            am = arch.arch_model(returns * 100, vol='Garch', p=1, q=1, rescale=False)
+            # Fit GARCH(1,1) model with Student's t distribution for fat tails
+            # 'dist': 't' enables Student's t distribution
+            am = arch.arch_model(returns * 100, vol='Garch', p=1, q=1, dist='t', rescale=False)
             res = am.fit(disp='off')
             
             # Get conditional volatility
@@ -2677,12 +2699,85 @@ if run_btn:
                     st.error(f"Monte Carlo simulation failed: {str(e)}")
                     st.info("Using simplified Monte Carlo visualization as fallback.")
             
-            # TAB 6: ADVANCED ANALYTICS
+            # TAB 6: ADVANCED ANALYTICS (UPDATED)
             with tabs[5]:
                 st.markdown("## 🔬 Advanced Analytics")
                 
-                # GARCH Analysis
-                st.markdown("#### GARCH Volatility Modeling")
+                # 1. Advanced Tail Risk Analytics (New)
+                st.markdown("### ⚠️ Advanced Tail Risk Analytics (VaR/CVaR/ES)")
+                
+                # Calculate rolling metrics
+                rolling_metrics = AdvancedRiskMetrics.calculate_rolling_risk_metrics(
+                    attribution_results['portfolio_returns'], window=126
+                )
+                
+                if not rolling_metrics.empty:
+                    # Create two columns for Tail Risk
+                    tail_col1, tail_col2 = st.columns([2, 1])
+                    
+                    with tail_col1:
+                        # Rolling VaR/CVaR Chart
+                        fig_risk = go.Figure()
+                        
+                        fig_risk.add_trace(go.Scatter(
+                            x=rolling_metrics.index,
+                            y=rolling_metrics['Rolling VaR'],
+                            name='VaR 95%',
+                            line=dict(color='#FFA15A', width=2)
+                        ))
+                        
+                        fig_risk.add_trace(go.Scatter(
+                            x=rolling_metrics.index,
+                            y=rolling_metrics['Rolling CVaR'],
+                            name='CVaR (ES) 95%',
+                            line=dict(color='#ef553b', width=2, dash='dot')
+                        ))
+                        
+                        fig_risk.add_trace(go.Scatter(
+                            x=attribution_results['portfolio_returns'].index,
+                            y=attribution_results['portfolio_returns'],
+                            name='Daily Returns',
+                            line=dict(color='rgba(255, 255, 255, 0.2)', width=1),
+                            mode='lines'
+                        ))
+                        
+                        fig_risk.update_layout(
+                            title="Rolling VaR & Expected Shortfall (6-Month Window)",
+                            xaxis_title="Date",
+                            yaxis_title="Return / Risk Level",
+                            template="plotly_dark",
+                            height=450,
+                            legend=dict(orientation="h", y=1.1)
+                        )
+                        st.plotly_chart(fig_risk, width='stretch')
+                    
+                    with tail_col2:
+                        # Current Risk Snapshot
+                        latest = rolling_metrics.iloc[-1]
+                        st.markdown("#### Current Risk Snapshot")
+                        
+                        st.metric("Current VaR (95%)", f"{latest['Rolling VaR']:.2%}", delta="Daily Risk")
+                        st.metric("Current Expected Shortfall", f"{latest['Rolling CVaR']:.2%}", delta="Tail Risk")
+                        
+                        # VaR Breach Analysis
+                        returns_subset = attribution_results['portfolio_returns'].loc[rolling_metrics.index]
+                        breaches = returns_subset[returns_subset < rolling_metrics['Rolling VaR']]
+                        breach_count = len(breaches)
+                        total_obs = len(returns_subset)
+                        
+                        st.metric("VaR Breaches", f"{breach_count} / {total_obs}", 
+                                 delta=f"{(breach_count/total_obs):.1%} Rate")
+                        
+                        st.markdown("""
+                        <div class="highlight-box">
+                            <small><strong>Expected Shortfall (ES):</strong> Also known as CVaR, measures the average loss in the worst 5% of cases.</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+                
+                st.markdown("---")
+                
+                # 2. GARCH Analysis (Enhanced)
+                st.markdown("### 📊 Advanced GARCH Volatility Modeling")
                 
                 if HAS_ARCH:
                     garch_model, garch_vol = AdvancedRiskMetrics.fit_garch_model(
@@ -2690,6 +2785,7 @@ if run_btn:
                     )
                     
                     if garch_vol is not None:
+                        # GARCH Plot 1: Volatility Cone
                         fig_garch = go.Figure()
                         
                         fig_garch.add_trace(go.Scatter(
@@ -2706,12 +2802,12 @@ if run_btn:
                             x=rolling_vol.index,
                             y=rolling_vol,
                             mode='lines',
-                            name='20-day Rolling Vol',
+                            name='20-day Realized Vol',
                             line=dict(color='#00cc96', width=1, dash='dash')
                         ))
                         
                         fig_garch.update_layout(
-                            title="GARCH Conditional Volatility vs Rolling Volatility",
+                            title="GARCH(1,1) Forecasted vs Realized Volatility",
                             xaxis_title="Date",
                             yaxis_title="Annualized Volatility (%)",
                             template="plotly_dark",
@@ -2720,33 +2816,85 @@ if run_btn:
                         
                         st.plotly_chart(fig_garch, width='stretch')
                         
-                        if garch_model is not None:
-                            # Display GARCH parameters
-                            st.markdown("##### GARCH(1,1) Parameters")
+                        # GARCH Plot 2: Standardized Residuals (New Advanced Feature)
+                        st.markdown("#### GARCH Diagnostics: Standardized Residuals")
+                        
+                        # Calculate residuals
+                        residuals = garch_model.resid / garch_model.conditional_volatility
+                        
+                        col_resid1, col_resid2 = st.columns(2)
+                        
+                        with col_resid1:
+                            fig_resid = go.Figure()
+                            fig_resid.add_trace(go.Scatter(
+                                x=residuals.index,
+                                y=residuals,
+                                mode='markers',
+                                marker=dict(size=4, color='#636efa', opacity=0.5),
+                                name='Std Residuals'
+                            ))
+                            fig_resid.add_hline(y=2, line_dash="dash", line_color="red")
+                            fig_resid.add_hline(y=-2, line_dash="dash", line_color="red")
                             
+                            fig_resid.update_layout(
+                                title="Standardized Residuals over Time",
+                                template="plotly_dark",
+                                height=350,
+                                yaxis_title="Sigma"
+                            )
+                            st.plotly_chart(fig_resid, width='stretch')
+                            
+                        with col_resid2:
+                            fig_resid_hist = go.Figure()
+                            fig_resid_hist.add_trace(go.Histogram(
+                                x=residuals,
+                                nbinsx=40,
+                                name='Residuals',
+                                marker_color='#00cc96'
+                            ))
+                            # Add normal curve
+                            x_norm = np.linspace(-4, 4, 100)
+                            y_norm = stats.norm.pdf(x_norm, 0, 1)
+                            fig_resid_hist.add_trace(go.Scatter(
+                                x=x_norm,
+                                y=y_norm * len(residuals) * (residuals.max() - residuals.min()) / 40,
+                                mode='lines',
+                                name='Standard Normal',
+                                line=dict(color='white', dash='dash')
+                            ))
+                            
+                            fig_resid_hist.update_layout(
+                                title="Residual Distribution vs Normal",
+                                template="plotly_dark",
+                                height=350
+                            )
+                            st.plotly_chart(fig_resid_hist, width='stretch')
+                        
+                        if garch_model is not None:
+                            st.markdown("##### GARCH(1,1) Model Parameters")
                             garch_cols = st.columns(4)
                             try:
                                 with garch_cols[0]:
-                                    st.metric("Alpha (ARCH)", f"{garch_model.params['alpha[1]']:.4f}")
-                                
+                                    st.metric("Alpha (ARCH Effect)", f"{garch_model.params['alpha[1]']:.4f}")
                                 with garch_cols[1]:
-                                    st.metric("Beta (GARCH)", f"{garch_model.params['beta[1]']:.4f}")
-                                
+                                    st.metric("Beta (GARCH Effect)", f"{garch_model.params['beta[1]']:.4f}")
                                 with garch_cols[2]:
-                                    st.metric("Omega", f"{garch_model.params['omega']:.6f}")
-                                
+                                    st.metric("Omega (Baseline)", f"{garch_model.params['omega']:.6f}")
                                 with garch_cols[3]:
-                                    persistence = garch_model.params['alpha[1]'] + garch_model.params['beta[1]']
-                                    st.metric("Persistence", f"{persistence:.4f}")
+                                    # Fix for params access
+                                    nu = garch_model.params.get('nu', 0)
+                                    st.metric("DoF (Student's t)", f"{nu:.2f}" if nu > 0 else "N/A")
                             except:
-                                st.warning("Could not extract GARCH parameters.")
+                                st.warning("Could not extract full GARCH parameters.")
                     else:
                         st.warning("GARCH model fitting failed.")
                 else:
                     st.warning("ARCH library not available. Install with: pip install arch")
                 
-                # PCA Analysis
-                st.markdown("#### Principal Component Analysis")
+                st.markdown("---")
+                
+                # 3. PCA & Correlation (Existing preserved)
+                st.markdown("### 🧬 Factor dimensionality & Correlation")
                 
                 comp_var, pca_expl_var, pca_obj = AdvancedRiskMetrics.calculate_component_var(
                     portfolio_returns, weights
@@ -2774,7 +2922,7 @@ if run_btn:
                     ))
                     
                     fig_pca.update_layout(
-                        title="PCA Scree Plot",
+                        title="PCA Scree Plot (Systemic Risk Factors)",
                         xaxis_title="Principal Component",
                         yaxis_title="Variance Explained (%)",
                         template="plotly_dark",
@@ -2791,7 +2939,7 @@ if run_btn:
                         x=comp_var_sorted.values * 100,
                         y=comp_var_sorted.index,
                         orientation='h',
-                        title="Component VaR Contribution",
+                        title="Component VaR Contribution (Diversification Analysis)",
                         labels={'x': 'Risk Contribution (%)', 'y': 'Asset'},
                         color=comp_var_sorted.values,
                         color_continuous_scale='OrRd'
