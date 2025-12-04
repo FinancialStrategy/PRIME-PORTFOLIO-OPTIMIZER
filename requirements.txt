@@ -3,7 +3,7 @@ yfinance>=0.2.40
 numpy
 pandas
 plotly
-seaborn
+seaborn==0.13.2
 scipy
 scikit-learn
 statsmodels
@@ -11,4 +11,5 @@ matplotlib
 cvxpy
 pyportfolioopt>=1.5.0
 arch
+
 
