@@ -1,6 +1,5 @@
-# app_yedek_V06_clean_ui.py
+# app_yedek_V06_clean_ui.py (Merged & Integrated)
 # Complete Institutional Portfolio Analysis Platform
-# Feature Set: V3 Fixed Attribution + V4 Multithreading + V5 Heuristics + Clean UI
 # ============================================================================
 # 1. CORE IMPORTS
 # ============================================================================
@@ -56,13 +55,13 @@ warnings.filterwarnings('ignore')
 # ============================================================================
 
 st.set_page_config(
-    page_title="Enigma Institutional Terminal Pro", 
+    page_title="QuantEdge MK | Institutional Terminal", 
     layout="wide", 
     page_icon="🏛️",
     initial_sidebar_state="expanded"
 )
 
-# Professional CSS with enhanced styling and FIXED overlapping issues
+# Professional CSS with enhanced styling
 st.markdown("""
 <style>
     .reportview-container {background: #0e1117;}
@@ -2151,7 +2150,7 @@ ticker_lists = {
     "Global Indices": GLOBAL_INDICES,
     "Custom Portfolio": []
 }
-selected_list = st.sidebar.selectbox("Asset Universe", list(ticker_lists.keys()))
+selected_list = st.sidebar.selectbox("Asset Universe", list(ticker_lists.keys()), index=1)
 available_tickers = ticker_lists[selected_list]
 
 # Custom Ticker Injection
@@ -2160,7 +2159,8 @@ if custom_tickers:
     available_tickers = list(set(available_tickers + [t.strip().upper() for t in custom_tickers.split(',')]))
 
 # Selection Widget
-selected_tickers = st.sidebar.multiselect("Portfolio Assets", available_tickers, default=available_tickers[:5])
+default_tickers = available_tickers[:5] if len(available_tickers) >= 5 else available_tickers
+selected_tickers = st.sidebar.multiselect("Portfolio Assets", available_tickers, default=default_tickers)
 
 # Enhanced Attribution Settings
 st.sidebar.markdown("---")
@@ -2176,6 +2176,8 @@ with st.sidebar.expander("📊 Advanced Attribution Settings", expanded=True):
             ["MKT", "SMB", "HML", "MOM", "QUAL", "LOWVOL", "VALUE", "GROWTH"],
             default=["MKT", "SMB", "HML"]
         )
+    else:
+        selected_factors = []
     
     benchmark_selection = st.selectbox(
         "Benchmark Selection",
@@ -2198,7 +2200,7 @@ st.sidebar.markdown("---")
 with st.sidebar.expander("⚙️ Model Parameters", expanded=True):
     start_date = st.date_input("Start Date", datetime.now() - timedelta(days=365*3))
     end_date = st.date_input("End Date", datetime.now())
-    rf_rate = st.number_input("Risk-Free Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
+    rf_rate = st.number_input("Risk-Free Rate (%)", 0.0, 50.0, 25.0, 0.1) / 100
 
     # Strategy Selection
     strat_options = [
