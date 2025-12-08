@@ -1676,13 +1676,14 @@ class EnhancedPortfolioDataManager:
         all_tickers = tickers + [benchmark_ticker]
         
         try:
+            # Configure yfinance to avoid threading issues and add delays
             data = yf.download(
                 all_tickers, 
                 start=start_date, 
                 end=end_date, 
                 progress=False, 
                 group_by='ticker', 
-                threads=True, # Enable Threads for Speed
+                threads=False, # Disable threads to prevent database locks
                 auto_adjust=True
             )
             
@@ -1711,6 +1712,10 @@ class EnhancedPortfolioDataManager:
                 # Multiple tickers
                 for ticker in all_tickers:
                     try:
+                        # Check if ticker exists in columns first to avoid KeyError
+                        if ticker not in data.columns.levels[0]:
+                             continue
+
                         df = data.xs(ticker, axis=1, level=0, drop_level=True)
                         price_col = 'Close'
                         if price_col in df.columns:
@@ -1729,8 +1734,14 @@ class EnhancedPortfolioDataManager:
             # Align dates
             common_idx = prices.index.intersection(benchmark_prices.index)
             if len(common_idx) == 0:
-                st.error("No overlapping data between portfolio and benchmark")
-                return pd.DataFrame(), pd.Series(), {}
+                # Fallback: if no benchmark data, use mean of portfolio assets as proxy
+                if benchmark_prices.empty and not prices.empty:
+                     st.warning(f"Benchmark {benchmark_ticker} data missing. Using portfolio average as benchmark.")
+                     benchmark_prices = prices.mean(axis=1)
+                     common_idx = prices.index
+                else:
+                     st.error("No overlapping data between portfolio and benchmark")
+                     return pd.DataFrame(), pd.Series(), {}
                 
             prices = prices.loc[common_idx]
             benchmark_prices = benchmark_prices.loc[common_idx]
