@@ -1,6 +1,6 @@
-# app_yedek_V05_performance_optimized.py
+# app_yedek_V06_clean_ui.py
 # Complete Institutional Portfolio Analysis Platform
-# Feature Set: V3 Fixed Attribution + V4 Multithreading + V5 Heuristic Caching (Fast Load)
+# Feature Set: V3 Fixed Attribution + V4 Multithreading + V5 Heuristics + Clean UI
 # ============================================================================
 # 1. CORE IMPORTS
 # ============================================================================
@@ -3085,41 +3085,6 @@ else:
         <p style="color: #888; font-size: 20px; margin-bottom: 40px;">
             Advanced Portfolio Analytics with Fixed Attribution System
         </p>
-        
-        <div style="display: flex; justify-content: center; gap: 30px; margin: 40px 0;">
-            <div style="background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%); 
-                        padding: 20px; border-radius: 10px; width: 200px; text-align: center;">
-                <div style="font-size: 36px; margin-bottom: 10px;">📊</div>
-                <h3>Fixed Attribution</h3>
-                <p style="color: #888; font-size: 14px;">Accurate Brinson-Fachler with real data</p>
-            </div>
-            
-            <div style="background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%); 
-                        padding: 20px; border-radius: 10px; width: 200px; text-align: center;">
-                <div style="font-size: 36px; margin-bottom: 10px;">📈</div>
-                <h3>Clean Visuals</h3>
-                <p style="color: #888; font-size: 14px;">No overlapping charts or tables</p>
-            </div>
-            
-            <div style="background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%); 
-                        padding: 20px; border-radius: 10px; width: 200px; text-align: center;">
-                <div style="font-size: 36px; margin-bottom: 10px;">🎲</div>
-                <h3>Monte Carlo</h3>
-                <p style="color: #888; font-size: 14px;">Advanced risk simulations</p>
-            </div>
-            
-            <div style="background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%); 
-                        padding: 20px; border-radius: 10px; width: 200px; text-align: center;">
-                <div style="font-size: 36px; margin-bottom: 10px;">🔬</div>
-                <h3>Quant Analytics</h3>
-                <p style="color: #888; font-size: 14px;">GARCH, PCA, Component VaR</p>
-            </div>
-        </div>
-        
-        <div style="margin-top: 50px;">
-            <h3 style="color: #ccc;">👈 Configure your analysis in the sidebar</h3>
-            <p style="color: #666;">Select assets, choose benchmark, and launch the fixed analytics engine</p>
-        </div>
     </div>
     """, unsafe_allow_html=True)
     
