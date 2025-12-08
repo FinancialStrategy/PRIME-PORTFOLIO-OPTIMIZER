@@ -1,6 +1,6 @@
-# app_yedek_V04_integrated_performance.py
+# app_yedek_V05_performance_optimized.py
 # Complete Institutional Portfolio Analysis Platform
-# Feature Set: V3 Fixed Attribution Logic + V4 Multithreading Performance + Fixed UI Overlap
+# Feature Set: V3 Fixed Attribution + V4 Multithreading + V5 Heuristic Caching (Fast Load)
 # ============================================================================
 # 1. CORE IMPORTS
 # ============================================================================
@@ -23,7 +23,7 @@ import sys
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib import cm
-import concurrent.futures  # Added for parallel execution
+import concurrent.futures  # For parallel execution
 
 # ============================================================================
 # 2. QUANTITATIVE LIBRARY IMPORTS
@@ -196,7 +196,7 @@ BENCHMARK_MAP = {
 }
 
 # ============================================================================
-# 4. ENHANCED ASSET CLASSIFICATION ENGINE (MULTITHREADED)
+# 4. ENHANCED ASSET CLASSIFICATION ENGINE (OPTIMIZED)
 # ============================================================================
 
 class EnhancedAssetClassifier:
@@ -229,7 +229,44 @@ class EnhancedAssetClassifier:
     
     @staticmethod
     def _fetch_single_metadata(ticker):
-        """Helper to fetch metadata for a single ticker safely."""
+        """Helper to fetch metadata for a single ticker safely.
+           OPTIMIZATION: Uses Heuristics first to avoid unnecessary API calls."""
+        
+        # 1. OPTIMIZATION: Check Hardcoded Maps FIRST to avoid network calls
+        predefined_sector = None
+        for sector_name, ticker_list in EnhancedAssetClassifier.SECTOR_MAP.items():
+            if ticker in ticker_list:
+                predefined_sector = sector_name
+                break
+        
+        # Special handling for BIST stocks if not in specific lists
+        if not predefined_sector and '.IS' in ticker:
+            if any(bank in ticker for bank in ['BANK', 'BNK', 'GARAN', 'ISCTR', 'HALK']):
+                predefined_sector = 'Turkish Financials'
+            elif any(ind in ticker for ind in ['HOLD', 'INDU', 'MAK', 'FAB']):
+                predefined_sector = 'Turkish Industrials'
+            else:
+                predefined_sector = 'Turkish Consumer'
+
+        # If we found it in our map, return a "Lite" object immediately
+        if predefined_sector:
+            return ticker, {
+                'sector': predefined_sector,
+                'industry': 'Inferred',
+                'country': EnhancedAssetClassifier._infer_country(ticker),
+                'region': EnhancedAssetClassifier._infer_region(ticker),
+                'marketCap': 1e9, # Default placeholder to avoid API call
+                'fullName': ticker,
+                'currency': EnhancedAssetClassifier._infer_currency(ticker),
+                'beta': 1.0,
+                'peRatio': 0,
+                'dividendYield': 0,
+                'profitMargins': 0,
+                'institutionOwnership': 0,
+                'style_factors': {'growth': 0.5, 'value': 0.5, 'quality': 0.5, 'size': 0.5} 
+            }
+
+        # 2. SLOW PATH: Only call API if we absolutely don't know the asset
         try:
             info = yf.Ticker(ticker).info
             
