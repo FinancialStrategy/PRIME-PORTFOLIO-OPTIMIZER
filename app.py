@@ -1,7 +1,6 @@
-# app_yedek_V03_complete_fixed.py
-# Complete Institutional Portfolio Analysis Platform with Fixed Attribution System
-# Enhanced with real benchmark data and proper calculations
-
+# app_yedek_V04_integrated_performance.py
+# Complete Institutional Portfolio Analysis Platform
+# Feature Set: V3 Fixed Attribution Logic + V4 Multithreading Performance + Fixed UI Overlap
 # ============================================================================
 # 1. CORE IMPORTS
 # ============================================================================
@@ -24,6 +23,7 @@ import sys
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib import cm
+import concurrent.futures  # Added for parallel execution
 
 # ============================================================================
 # 2. QUANTITATIVE LIBRARY IMPORTS
@@ -196,7 +196,7 @@ BENCHMARK_MAP = {
 }
 
 # ============================================================================
-# 4. ENHANCED ASSET CLASSIFICATION ENGINE
+# 4. ENHANCED ASSET CLASSIFICATION ENGINE (MULTITHREADED)
 # ============================================================================
 
 class EnhancedAssetClassifier:
@@ -228,53 +228,62 @@ class EnhancedAssetClassifier:
     }
     
     @staticmethod
+    def _fetch_single_metadata(ticker):
+        """Helper to fetch metadata for a single ticker safely."""
+        try:
+            info = yf.Ticker(ticker).info
+            
+            # Enhanced sector classification
+            sector = EnhancedAssetClassifier._enhanced_sector_classification(ticker, info)
+            region = EnhancedAssetClassifier._enhanced_region_classification(ticker, info)
+            
+            # Get style factors
+            style_factors = EnhancedAssetClassifier._calculate_style_factors(ticker, info)
+            
+            return ticker, {
+                'sector': sector,
+                'industry': info.get('industry', 'Unknown'),
+                'country': info.get('country', 'Unknown'),
+                'region': region,
+                'marketCap': info.get('marketCap', 0),
+                'fullName': info.get('longName', ticker),
+                'currency': info.get('currency', 'USD'),
+                'beta': info.get('beta', 1.0),
+                'peRatio': info.get('trailingPE', 0),
+                'dividendYield': info.get('dividendYield', 0),
+                'profitMargins': info.get('profitMargins', 0),
+                'institutionOwnership': info.get('heldPercentInstitutions', 0),
+                'style_factors': style_factors
+            }
+        except Exception as e:
+            # Fallback to inference
+            return ticker, {
+                'sector': EnhancedAssetClassifier._infer_sector(ticker),
+                'industry': 'Unknown',
+                'country': EnhancedAssetClassifier._infer_country(ticker),
+                'region': EnhancedAssetClassifier._infer_region(ticker),
+                'marketCap': 0,
+                'fullName': ticker,
+                'currency': EnhancedAssetClassifier._infer_currency(ticker),
+                'beta': 1.0,
+                'peRatio': 0,
+                'dividendYield': 0,
+                'profitMargins': 0,
+                'institutionOwnership': 0,
+                'style_factors': {}
+            }
+
+    @staticmethod
     @st.cache_data(ttl=3600*24)
     def get_asset_metadata(tickers):
-        """Fetches detailed metadata for each asset with enhanced classification."""
+        """Fetches detailed metadata for each asset using MULTITHREADING."""
         metadata = {}
-        for ticker in tickers:
-            try:
-                info = yf.Ticker(ticker).info
-                
-                # Enhanced sector classification
-                sector = EnhancedAssetClassifier._enhanced_sector_classification(ticker, info)
-                region = EnhancedAssetClassifier._enhanced_region_classification(ticker, info)
-                
-                # Get style factors
-                style_factors = EnhancedAssetClassifier._calculate_style_factors(ticker, info)
-                
-                metadata[ticker] = {
-                    'sector': sector,
-                    'industry': info.get('industry', 'Unknown'),
-                    'country': info.get('country', 'Unknown'),
-                    'region': region,
-                    'marketCap': info.get('marketCap', 0),
-                    'fullName': info.get('longName', ticker),
-                    'currency': info.get('currency', 'USD'),
-                    'beta': info.get('beta', 1.0),
-                    'peRatio': info.get('trailingPE', 0),
-                    'dividendYield': info.get('dividendYield', 0),
-                    'profitMargins': info.get('profitMargins', 0),
-                    'institutionOwnership': info.get('heldPercentInstitutions', 0),
-                    'style_factors': style_factors
-                }
-            except Exception as e:
-                # Fallback to inference
-                metadata[ticker] = {
-                    'sector': EnhancedAssetClassifier._infer_sector(ticker),
-                    'industry': 'Unknown',
-                    'country': EnhancedAssetClassifier._infer_country(ticker),
-                    'region': EnhancedAssetClassifier._infer_region(ticker),
-                    'marketCap': 0,
-                    'fullName': ticker,
-                    'currency': EnhancedAssetClassifier._infer_currency(ticker),
-                    'beta': 1.0,
-                    'peRatio': 0,
-                    'dividendYield': 0,
-                    'profitMargins': 0,
-                    'institutionOwnership': 0,
-                    'style_factors': {}
-                }
+        # Using ThreadPoolExecutor for concurrent execution
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_ticker = {executor.submit(EnhancedAssetClassifier._fetch_single_metadata, ticker): ticker for ticker in tickers}
+            for future in concurrent.futures.as_completed(future_to_ticker):
+                ticker, data = future.result()
+                metadata[ticker] = data
         return metadata
     
     @staticmethod
@@ -1637,7 +1646,7 @@ class EnhancedPortfolioDataManager:
                 end=end_date, 
                 progress=False, 
                 group_by='ticker', 
-                threads=False,
+                threads=True, # Enable Threads for Speed
                 auto_adjust=True
             )
             
